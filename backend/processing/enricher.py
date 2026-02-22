@@ -1,7 +1,9 @@
 """AI enrichment using Gemini API."""
+import asyncio
 import json
 import logging
 import time
+from datetime import date
 from typing import Optional
 
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
@@ -236,10 +238,18 @@ def _enrich_one(article: Article, session: Session, use_openai: bool = False) ->
     return True
 
 
-async def enrich_articles(saved_ids: list[int], force_provider: str = "auto", run_id=None, fetched=0, new=0, saved_count=0) -> int:
+async def enrich_articles(
+    saved_ids: list[int],
+    force_provider: str = "auto",
+    run_id=None,
+    target_date: Optional[date] = None,
+    date_idx: int = 0,
+    dates_total: int = 1,
+    running_totals: Optional[dict] = None,
+) -> int:
     """
-    Enrich articles by ID. Returns count of successfully enriched articles.
-    Aborts immediately if the API key, model, or quota is invalid.
+    Enrich articles by ID using staggered concurrent requests.
+    Returns count of successfully enriched articles.
 
     force_provider: "auto" (default) | "gemini" | "openai"
       - "gemini": probe Gemini; if unavailable, return 0 (no fallback)
@@ -248,6 +258,9 @@ async def enrich_articles(saved_ids: list[int], force_provider: str = "auto", ru
     """
     if not saved_ids:
         return 0
+
+    if running_totals is None:
+        running_totals = {"fetched": 0, "new": 0, "saved": 0, "enriched": 0}
 
     # Determine which provider to use
     use_openai = False
@@ -282,52 +295,119 @@ async def enrich_articles(saved_ids: list[int], force_provider: str = "auto", ru
             logger.warning("No API keys set (GEMINI_API_KEY or OPENAI_API_KEY) — skipping enrichment")
             return 0
 
+    # Re-enrich any pending articles left from a prior crash for this date
+    pending_ids: list[int] = []
+    if target_date is not None:
+        with Session(sync_engine) as s:
+            pending_ids = list(s.scalars(
+                select(Article.id).where(
+                    Article.is_enriched == 0,
+                    Article.id.notin_(saved_ids),
+                    Article.digest_date == target_date,
+                )
+            ).all())
+        if pending_ids:
+            logger.info(f"[{target_date}] Found {len(pending_ids)} pending articles from prior run — re-enriching")
+
+    all_ids = saved_ids + pending_ids
+
+    # Stagger interval: 1s at 60 RPM paid tier; 4s at 15 RPM free tier
+    rate_interval = 60.0 / settings.enrichment_rate_rpm
+
+    lock = asyncio.Lock()
     enriched_count = 0
-    consecutive_failures = 0
-    MAX_CONSECUTIVE_FAILURES = 3  # abort if this many articles fail in a row (quota exhausted, etc.)
-    batch_size = settings.enrichment_batch_size
+    abort_flag = asyncio.Event()
 
-    with Session(sync_engine) as session:
-        for i in range(0, len(saved_ids), batch_size):
-            batch_ids = saved_ids[i : i + batch_size]
-            articles = session.execute(
-                select(Article).where(Article.id.in_(batch_ids))
-            ).scalars().all()
+    async def _track(article_id: int, slot: int) -> bool:
+        nonlocal enriched_count
+        if abort_flag.is_set():
+            return False
+        await asyncio.sleep(slot * rate_interval)
+        if abort_flag.is_set():
+            return False
 
-            for article in articles:
+        def _work():
+            with Session(sync_engine) as s:
+                article = s.get(Article, article_id)
+                if article is None:
+                    return False
                 try:
-                    success = _enrich_one(article, session, use_openai=use_openai)
-                except GeminiFatalError as exc:
-                    logger.error(f"Fatal Gemini error — stopping enrichment run: {exc}")
-                    return enriched_count
+                    return _enrich_one(article, s, use_openai=use_openai)
+                except GeminiFatalError:
+                    raise
 
-                if success:
-                    enriched_count += 1
-                    consecutive_failures = 0
-                    logger.info(f"Enriched article {article.id} ({enriched_count}/{len(saved_ids)})")
-                    if run_id is not None:
-                        from backend.ingestion.pipeline import _update_progress
-                        _update_progress(run_id, {"stage": "enriching", "fetched": fetched, "new": new, "saved": saved_count, "enriched": enriched_count, "total_to_enrich": len(saved_ids)})
-                else:
-                    consecutive_failures += 1
-                    if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                        logger.error(
-                            f"{consecutive_failures} consecutive enrichment failures — "
-                            f"API key may be invalid, quota may be exhausted, or model unreachable. "
-                            f"Stopping run. ({enriched_count} articles enriched before abort)"
-                        )
-                        return enriched_count
+        try:
+            ok = await asyncio.to_thread(_work)
+        except GeminiFatalError as exc:
+            logger.error(f"Fatal enrichment error — aborting all remaining slots: {exc}")
+            abort_flag.set()
+            return False
+        except Exception as exc:
+            logger.error(f"Unexpected error enriching article {article_id}: {exc}")
+            return False
 
-                time.sleep(10)  # stay under free-tier 15 RPM limit
+        if ok:
+            async with lock:
+                enriched_count += 1
+                _update_progress_enriching(
+                    run_id, target_date, date_idx, dates_total,
+                    running_totals, enriched_count, len(all_ids),
+                )
+            logger.info(f"Enriched article {article_id} ({enriched_count}/{len(all_ids)})")
+        return bool(ok)
 
-            _compute_related(session, batch_ids)
+    results = await asyncio.gather(
+        *[_track(aid, i) for i, aid in enumerate(all_ids)],
+        return_exceptions=True,
+    )
 
-    return enriched_count
+    enriched_ids = [
+        aid for aid, res in zip(all_ids, results)
+        if res is True
+    ]
+
+    # Compute related articles once, after all enrichment for this date is done
+    with Session(sync_engine) as s:
+        _compute_related(s, enriched_ids)
+
+    return len(enriched_ids)
+
+
+def _update_progress_enriching(
+    run_id, target_date, date_idx, dates_total, running_totals, enriched_so_far, total_to_enrich
+):
+    """Helper to push enrichment progress without importing pipeline (avoids circular import)."""
+    if run_id is None:
+        return
+    from sqlalchemy.orm import Session as _Session
+    from sqlalchemy import update as sa_update
+    from backend.db import sync_engine as _engine
+    from backend.db.models import PipelineRun
+    with _Session(_engine) as session:
+        session.execute(
+            sa_update(PipelineRun).where(PipelineRun.id == run_id).values(
+                progress={
+                    "stage": "enriching",
+                    "current_date": str(target_date) if target_date else None,
+                    "dates_completed": date_idx,
+                    "dates_total": dates_total,
+                    "fetched": running_totals.get("fetched", 0),
+                    "new": running_totals.get("new", 0),
+                    "saved": running_totals.get("saved", 0),
+                    "enriched": running_totals.get("enriched", 0) + enriched_so_far,
+                    "total_to_enrich": total_to_enrich,
+                }
+            )
+        )
+        session.commit()
 
 
 def _compute_related(session: Session, article_ids: list[int]) -> None:
     """For each article, compute top 3 related articles by tag/category overlap."""
     from datetime import date, timedelta
+
+    if not article_ids:
+        return
 
     cutoff = date.today() - timedelta(days=30)
     recent = session.execute(

@@ -2,7 +2,7 @@
 import asyncio
 import logging
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -56,10 +56,12 @@ def _update_run(run_id, status, result=None, error_message=None, duration_second
         session.commit()
 
 
-def _get_existing_hashes(session: Session, target_date: date) -> set[str]:
-    """Retrieve dedup hashes already in DB for the given date."""
+def _get_existing_hashes(session: Session, candidate_hashes: set[str]) -> set[str]:
+    """Return which of the candidate hashes are already in the DB (globally, not per-date)."""
+    if not candidate_hashes:
+        return set()
     rows = session.execute(
-        select(Article.dedup_hash).where(Article.digest_date == target_date)
+        select(Article.dedup_hash).where(Article.dedup_hash.in_(candidate_hashes))
     ).scalars().all()
     return set(rows)
 
@@ -79,60 +81,172 @@ def _save_articles(session: Session, articles: list[dict]) -> list[Article]:
     return saved
 
 
-async def run_pipeline(target_date: Optional[date] = None, run_id: Optional[int] = None) -> dict:
-    target_date = target_date or date.today()
+async def _run_one_date(
+    target_date: date,
+    run_id: Optional[int],
+    date_idx: int,
+    dates_total: int,
+    running_totals: dict,
+    effective_from: date,
+    effective_to: date,
+) -> dict:
+    """Run the full pipeline for a single date. Returns per-date counts."""
+    logger.info(f"Processing date {date_idx + 1}/{dates_total}: {target_date}")
+
+    # --- Step 1: Fetch from all sources ---
+    _update_progress(run_id, {
+        "date_from": str(effective_from),
+        "date_to":   str(effective_to),
+        "stage": "fetching",
+        "current_date": str(target_date),
+        "dates_completed": date_idx,
+        "dates_total": dates_total,
+        **running_totals,
+    })
+    hn_articles, reddit_articles, arxiv_articles, rss_articles = await asyncio.gather(
+        fetch_hackernews(target_date),
+        asyncio.to_thread(fetch_reddit, target_date),
+        asyncio.to_thread(fetch_arxiv, target_date),
+        asyncio.to_thread(fetch_rss, target_date),
+    )
+
+    raw_articles = hn_articles + reddit_articles + arxiv_articles + rss_articles
+    logger.info(f"[{target_date}] Fetched {len(raw_articles)} total raw articles")
+
+    # --- Step 2: Filter already-ingested ---
+    _update_progress(run_id, {
+        "date_from": str(effective_from),
+        "date_to":   str(effective_to),
+        "stage": "filtering",
+        "current_date": str(target_date),
+        "dates_completed": date_idx,
+        "dates_total": dates_total,
+        "fetched": running_totals["fetched"] + len(raw_articles),
+        **{k: v for k, v in running_totals.items() if k != "fetched"},
+    })
+    with Session(sync_engine) as session:
+        candidate_hashes = {a["dedup_hash"] for a in raw_articles}
+        existing_hashes = _get_existing_hashes(session, candidate_hashes)
+        new_articles = [a for a in raw_articles if a["dedup_hash"] not in existing_hashes]
+        logger.info(f"[{target_date}] {len(new_articles)} new after hash filter (skipped {len(raw_articles) - len(new_articles)})")
+
+        if not new_articles:
+            logger.info(f"[{target_date}] No new articles to process")
+            return {"fetched": len(raw_articles), "new": 0, "saved": 0, "enriched": 0}
+
+        # --- Step 3: Semantic deduplication ---
+        _update_progress(run_id, {
+            "date_from": str(effective_from),
+            "date_to":   str(effective_to),
+            "stage": "deduping",
+            "current_date": str(target_date),
+            "dates_completed": date_idx,
+            "dates_total": dates_total,
+            "fetched": running_totals["fetched"] + len(raw_articles),
+            "new": running_totals["new"] + len(new_articles),
+            "saved": running_totals["saved"],
+            "enriched": running_totals["enriched"],
+        })
+        deduped = await asyncio.to_thread(deduplicate_articles, new_articles)
+        logger.info(f"[{target_date}] {len(deduped)} articles after semantic dedup")
+
+        # --- Step 4: Save to DB ---
+        _update_progress(run_id, {
+            "date_from": str(effective_from),
+            "date_to":   str(effective_to),
+            "stage": "saving",
+            "current_date": str(target_date),
+            "dates_completed": date_idx,
+            "dates_total": dates_total,
+            "fetched": running_totals["fetched"] + len(raw_articles),
+            "new": running_totals["new"] + len(new_articles),
+            "deduped": len(deduped),
+            "saved": running_totals["saved"],
+            "enriched": running_totals["enriched"],
+        })
+        saved = _save_articles(session, deduped)
+        logger.info(f"[{target_date}] Saved {len(saved)} articles to database")
+
+    # --- Step 5: Enrich with Gemini (concurrent) ---
+    # Build totals that include this date's contributions so enrichment progress is accurate
+    current_totals = {
+        "fetched":  running_totals["fetched"]  + len(raw_articles),
+        "new":      running_totals["new"]      + len(new_articles),
+        "saved":    running_totals["saved"]    + len(saved),
+        "enriched": running_totals["enriched"],
+    }
+    _update_progress(run_id, {
+        "date_from": str(effective_from),
+        "date_to":   str(effective_to),
+        "stage": "enriching",
+        "current_date": str(target_date),
+        "dates_completed": date_idx,
+        "dates_total": dates_total,
+        **current_totals,
+        "total_to_enrich": len(saved),
+    })
+    enriched_count = await enrich_articles(
+        saved_ids=[a.id for a in saved],
+        run_id=run_id,
+        target_date=target_date,
+        date_idx=date_idx,
+        dates_total=dates_total,
+        running_totals=current_totals,
+    )
+    logger.info(f"[{target_date}] Enriched {enriched_count} articles")
+
+    return {
+        "fetched":  len(raw_articles),
+        "new":      len(new_articles),   # articles that passed the hash-exists check
+        "saved":    len(saved),          # articles after semantic dedup, written to DB
+        "enriched": enriched_count,
+    }
+
+
+async def run_pipeline(
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    # Legacy single-date param — kept for backward compat
+    target_date: Optional[date] = None,
+    run_id: Optional[int] = None,
+) -> dict:
+    # Resolve effective range
+    effective_from = date_from or target_date or date.today()
+    effective_to   = date_to or effective_from
+
+    all_dates = [
+        effective_from + timedelta(days=i)
+        for i in range((effective_to - effective_from).days + 1)
+    ]
+
     t0 = time.monotonic()
-    logger.info(f"Starting ingestion pipeline for {target_date}")
+    logger.info(f"Starting pipeline for {effective_from} → {effective_to} ({len(all_dates)} day(s))")
+
+    totals = {"fetched": 0, "new": 0, "saved": 0, "enriched": 0}
+
     try:
-        # --- Step 1: Fetch from all sources ---
-        _update_progress(run_id, {"stage": "fetching"})
-        hn_articles, reddit_articles, arxiv_articles, rss_articles = await asyncio.gather(
-            fetch_hackernews(target_date),
-            asyncio.to_thread(fetch_reddit, target_date),
-            asyncio.to_thread(fetch_arxiv, target_date),
-            asyncio.to_thread(fetch_rss, target_date),
-        )
-
-        raw_articles = hn_articles + reddit_articles + arxiv_articles + rss_articles
-        logger.info(f"Fetched {len(raw_articles)} total raw articles")
-
-        # --- Step 2: Filter already-ingested ---
-        _update_progress(run_id, {"stage": "filtering", "fetched": len(raw_articles)})
-        with Session(sync_engine) as session:
-            existing_hashes = _get_existing_hashes(session, target_date)
-            new_articles = [a for a in raw_articles if a["dedup_hash"] not in existing_hashes]
-            logger.info(f"{len(new_articles)} new articles after hash filter (skipped {len(raw_articles) - len(new_articles)})")
-
-            if not new_articles:
-                logger.info("No new articles to process")
-                result = {"fetched": len(raw_articles), "new": 0, "saved": 0, "enriched": 0, "date": str(target_date)}
-                _update_run(run_id, "success", result=result, duration_seconds=time.monotonic() - t0)
-                return result
-
-            # --- Step 3: Semantic deduplication ---
-            _update_progress(run_id, {"stage": "deduping", "fetched": len(raw_articles), "new": len(new_articles)})
-            deduped = await asyncio.to_thread(deduplicate_articles, new_articles)
-            logger.info(f"{len(deduped)} articles after semantic dedup")
-
-            # --- Step 4: Save to DB ---
-            _update_progress(run_id, {"stage": "saving", "fetched": len(raw_articles), "new": len(new_articles), "deduped": len(deduped)})
-            saved = _save_articles(session, deduped)
-            logger.info(f"Saved {len(saved)} articles to database")
-
-        # --- Step 5: Enrich with Gemini ---
-        _update_progress(run_id, {"stage": "enriching", "fetched": len(raw_articles), "new": len(new_articles), "saved": len(saved), "enriched": 0, "total_to_enrich": len(saved)})
-        enriched_count = await enrich_articles(saved_ids=[a.id for a in saved], run_id=run_id, fetched=len(raw_articles), new=len(new_articles), saved_count=len(saved))
-        logger.info(f"Enriched {enriched_count} articles")
+        for idx, d in enumerate(all_dates):
+            _update_progress(run_id, {
+                "date_from": str(effective_from),
+                "date_to":   str(effective_to),
+                "stage": "fetching",
+                "current_date": str(d),
+                "dates_completed": idx,
+                "dates_total": len(all_dates),
+                **totals,
+            })
+            day_result = await _run_one_date(d, run_id, idx, len(all_dates), dict(totals), effective_from, effective_to)
+            for k in totals:
+                totals[k] += day_result.get(k, 0)
 
         result = {
-            "fetched": len(raw_articles),
-            "new": len(deduped),
-            "saved": len(saved),
-            "enriched": enriched_count,
-            "date": str(target_date),
+            **totals,
+            "date_from": str(effective_from),
+            "date_to":   str(effective_to),
         }
         _update_run(run_id, "success", result=result, duration_seconds=time.monotonic() - t0)
         return result
+
     except asyncio.CancelledError:
         _update_run(run_id, "cancelled", error_message="Cancelled by admin", duration_seconds=time.monotonic() - t0)
         raise
@@ -143,10 +257,15 @@ async def run_pipeline(target_date: Optional[date] = None, run_id: Optional[int]
 
 if __name__ == "__main__":
     import sys
-    target = None
-    if len(sys.argv) > 1 and sys.argv[1] != "today":
-        from datetime import date as dt
-        target = dt.fromisoformat(sys.argv[1])
+    from datetime import date as dt
 
-    result = asyncio.run(run_pipeline(target))
+    date_from_arg = None
+    date_to_arg   = None
+
+    if len(sys.argv) > 1 and sys.argv[1] != "today":
+        date_from_arg = dt.fromisoformat(sys.argv[1])
+    if len(sys.argv) > 2:
+        date_to_arg = dt.fromisoformat(sys.argv[2])
+
+    result = asyncio.run(run_pipeline(date_from=date_from_arg, date_to=date_to_arg))
     print(result)

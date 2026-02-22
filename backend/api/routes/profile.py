@@ -5,7 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, func, cast, Date as SADate
 
 from backend.db import get_db
 from backend.db.models import Article, UserProfile, UserArticleScore
@@ -90,8 +90,8 @@ async def get_personalized_feed(
             ),
         )
         .where(
-            Article.digest_date >= effective_from,
-            Article.digest_date <= effective_to,
+            func.coalesce(cast(Article.published_at, SADate), Article.digest_date) >= effective_from,
+            func.coalesce(cast(Article.published_at, SADate), Article.digest_date) <= effective_to,
             Article.is_enriched >= 0,
         )
     )
