@@ -95,6 +95,12 @@ jobs:
           service: ainews-api
           region: ${{ vars.GCP_REGION }}
           image: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/ainews/api:${{ github.sha }}
+          cloudsql_instances: ${{ vars.GCP_PROJECT_ID }}:${{ vars.GCP_REGION }}:ainews-db
+          env_vars: |
+            DATABASE_URL=${{ secrets.DATABASE_URL }}
+            DATABASE_URL_SYNC=${{ secrets.DATABASE_URL_SYNC }}
+            GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+            ENVIRONMENT=production
 
       # ── Build frontend ─────────────────────────────────────────
       - name: Build frontend
