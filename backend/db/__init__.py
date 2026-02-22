@@ -1,7 +1,11 @@
+import logging
+
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select, func
 from backend.config import settings
-from backend.db.models import Base
+from backend.db.models import Base, RssFeed
+
+logger = logging.getLogger(__name__)
 
 # Async engine for FastAPI
 async_engine = create_async_engine(settings.database_url, echo=False, pool_pre_ping=True)
@@ -30,3 +34,24 @@ async def create_tables():
                 "ALTER TABLE articles ADD COLUMN IF NOT EXISTS practical_takeaway TEXT"
             )
         )
+        await conn.execute(
+            __import__("sqlalchemy").text(
+                "ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS date_to VARCHAR(20)"
+            )
+        )
+    await _seed_rss_feeds()
+
+
+async def _seed_rss_feeds():
+    """Insert default RSS feeds if the table is empty."""
+    from backend.ingestion.sources.rss_feeds import DEFAULT_RSS_FEEDS
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(func.count()).select_from(RssFeed))
+        count = result.scalar()
+        if count and count > 0:
+            return
+        for feed in DEFAULT_RSS_FEEDS:
+            session.add(RssFeed(name=feed["name"], url=feed["url"]))
+        await session.commit()
+        logger.info(f"Seeded {len(DEFAULT_RSS_FEEDS)} default RSS feeds")

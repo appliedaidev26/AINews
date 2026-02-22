@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
-import { adminApi, type PipelineRun, type PipelineStage } from '../lib/api'
+import { adminApi, type PipelineRun, type PipelineStage, type CoverageDay, type RssFeed, type SourcesResponse } from '../lib/api'
 
 const STORAGE_KEY = 'ainews_admin_key'
-const POLL_RUNS_MS = 15_000   // refresh full list every 15s
-const POLL_RUN_MS  = 3_000    // poll active run every 3s for progress
+const POLL_RUNS_MS     = 15_000   // refresh full list every 15s
+const POLL_RUN_MS      = 3_000    // poll active run every 3s for progress
+const POLL_COVERAGE_MS = 60_000   // refresh coverage every 60s
 
 const STAGE_LABELS: Record<PipelineStage, string> = {
   fetching:  'Fetching articles from HN, Reddit, Arxiv, RSS…',
@@ -25,6 +26,13 @@ function formatDate(iso: string): string {
   return new Date(iso).toLocaleString(undefined, {
     month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit',
   })
+}
+
+/** Returns YYYY-MM-DD for today offset by `offsetDays`. */
+function isoDate(offsetDays = 0): string {
+  const d = new Date()
+  d.setDate(d.getDate() + offsetDays)
+  return d.toISOString().slice(0, 10)
 }
 
 function StatusBadge({ status }: { status: PipelineRun['status'] }) {
@@ -49,21 +57,50 @@ function ProgressPanel({ run }: { run: PipelineRun }) {
   const stage = p.stage
 
   const steps: { key: PipelineStage; label: string; value?: string }[] = [
-    { key: 'fetching',  label: 'Fetch',      value: p.fetched != null ? `${p.fetched} articles` : undefined },
-    { key: 'filtering', label: 'Filter',      value: p.fetched != null && p.new != null ? `${p.new} new of ${p.fetched}` : undefined },
-    { key: 'deduping',  label: 'Dedup',       value: p.deduped != null ? `${p.deduped} unique` : undefined },
-    { key: 'saving',    label: 'Save',         value: p.saved != null ? `${p.saved} saved` : undefined },
-    { key: 'enriching', label: 'Summarize',   value: p.total_to_enrich != null ? `${p.enriched ?? 0} / ${p.total_to_enrich}` : undefined },
+    { key: 'fetching',  label: 'Fetch',    value: p.fetched != null ? `${p.fetched} articles` : undefined },
+    { key: 'filtering', label: 'Filter',   value: p.fetched != null && p.new != null ? `${p.new} new of ${p.fetched}` : undefined },
+    { key: 'deduping',  label: 'Dedup',    value: p.deduped != null ? `${p.deduped} unique` : undefined },
+    { key: 'saving',    label: 'Save',     value: p.saved != null ? `${p.saved} saved` : undefined },
+    { key: 'enriching', label: 'Summarize', value: p.total_to_enrich != null ? `${p.enriched ?? 0} / ${p.total_to_enrich}` : undefined },
   ]
 
   const stageOrder: PipelineStage[] = ['fetching', 'filtering', 'deduping', 'saving', 'enriching']
   const currentIdx = stage ? stageOrder.indexOf(stage) : -1
 
+  const isMultiDate = p.dates_total != null && p.dates_total > 1
+
   return (
     <div className="border border-gray-200 rounded p-4 space-y-3">
+      {/* Date-range progress */}
+      {isMultiDate && (
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-gray-500">
+            Processing date {(p.dates_completed ?? 0) + 1} / {p.dates_total}
+            {p.current_date ? ` — ${p.current_date}` : ''}
+          </span>
+          <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-indigo-300 rounded-full transition-all duration-500"
+              style={{ width: `${(((p.dates_completed ?? 0) + 1) / (p.dates_total ?? 1)) * 100}%` }}
+            />
+          </div>
+        </div>
+      )}
+
       {/* Stage label */}
       <p className="text-sm text-blue-700 font-medium animate-pulse">
         {stage ? STAGE_LABELS[stage] : 'Starting…'}
+      </p>
+
+      {/* Running status line */}
+      <p className="text-xs text-gray-500 font-mono leading-relaxed">
+        {[
+          p.fetched   != null                         && `fetched ${p.fetched}`,
+          p.new       != null                         && `${p.new} new`,
+          p.deduped   != null                         && `${p.deduped} unique`,
+          p.saved     != null                         && `${p.saved} saved`,
+          p.total_to_enrich != null                   && `enriched ${p.enriched ?? 0}/${p.total_to_enrich}`,
+        ].filter(Boolean).join(' · ') || 'Starting…'}
       </p>
 
       {/* Step pills */}
@@ -114,6 +151,253 @@ function ProgressPanel({ run }: { run: PipelineRun }) {
   )
 }
 
+function CoverageStatusDot({ day }: { day: CoverageDay }) {
+  if (day.failed > 0) return <span className="text-red-500 text-sm">⚠</span>
+  if (day.pending > 0) return <span className="text-yellow-500 text-sm">●</span>
+  if (day.enriched === day.total && day.total > 0) return <span className="text-green-500 text-sm">✓</span>
+  return <span className="text-gray-300 text-sm">○</span>
+}
+
+function SourcesPanel({ adminKey }: { adminKey: string }) {
+  const [sources, setSources] = useState<SourcesResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [showAddForm, setShowAddForm] = useState(false)
+  const [addName, setAddName] = useState('')
+  const [addUrl, setAddUrl] = useState('')
+  const [addError, setAddError] = useState('')
+  const [adding, setAdding] = useState(false)
+  const [togglingId, setTogglingId] = useState<number | null>(null)
+
+  async function loadSources() {
+    try {
+      const data = await adminApi.getSources(adminKey)
+      setSources(data)
+    } catch { /* ignore */ }
+    finally { setLoading(false) }
+  }
+
+  useEffect(() => { loadSources() }, [adminKey])
+
+  async function handleAdd(e: React.FormEvent) {
+    e.preventDefault()
+    setAddError('')
+    setAdding(true)
+    try {
+      await adminApi.addRssFeed(adminKey, { name: addName.trim(), url: addUrl.trim() })
+      setAddName('')
+      setAddUrl('')
+      setShowAddForm(false)
+      await loadSources()
+    } catch (err) {
+      setAddError(err instanceof Error ? err.message : 'Failed to add feed')
+    } finally { setAdding(false) }
+  }
+
+  async function handleDelete(id: number, name: string) {
+    if (!window.confirm(`Delete "${name}"?`)) return
+    try {
+      await adminApi.deleteRssFeed(adminKey, id)
+      await loadSources()
+    } catch { /* ignore */ }
+  }
+
+  async function handleToggle(feed: RssFeed) {
+    setTogglingId(feed.id)
+    try {
+      await adminApi.updateRssFeed(adminKey, feed.id, {
+        name: feed.name,
+        url: feed.url,
+        is_active: !feed.is_active,
+      })
+      await loadSources()
+    } catch { /* ignore */ }
+    finally { setTogglingId(null) }
+  }
+
+  const ro = sources?.readonly
+
+  return (
+    <section className="space-y-4">
+      <p className="section-heading">Sources</p>
+
+      {loading ? (
+        <p className="text-sm text-gray-400">Loading…</p>
+      ) : (
+        <>
+          {/* RSS Feeds — editable */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-medium text-gray-600">RSS Feeds</p>
+              <button
+                onClick={() => { setShowAddForm(!showAddForm); setAddError('') }}
+                className="text-xs text-indigo-600 hover:underline"
+              >
+                {showAddForm ? 'Cancel' : '+ Add Feed'}
+              </button>
+            </div>
+
+            {showAddForm && (
+              <form onSubmit={handleAdd} className="border border-gray-200 rounded p-3 space-y-2">
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="Feed name"
+                    value={addName}
+                    onChange={e => setAddName(e.target.value)}
+                    className="flex-1 border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:border-indigo-500"
+                  />
+                  <input
+                    type="text"
+                    placeholder="https://example.com/feed.xml"
+                    value={addUrl}
+                    onChange={e => setAddUrl(e.target.value)}
+                    className="flex-[2] border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:border-indigo-500"
+                  />
+                  <button
+                    type="submit"
+                    disabled={adding || !addName.trim() || !addUrl.trim()}
+                    className="bg-indigo-600 text-white text-sm px-3 py-1.5 rounded hover:bg-indigo-700 disabled:opacity-50 whitespace-nowrap"
+                  >
+                    {adding ? 'Validating…' : 'Validate & Add'}
+                  </button>
+                </div>
+                {addError && <p className="text-xs text-red-600">{addError}</p>}
+              </form>
+            )}
+
+            {sources && sources.rss_feeds.length > 0 && (
+              <div className="border border-gray-200 rounded overflow-x-auto">
+                <table className="w-full text-xs text-gray-700">
+                  <thead className="bg-gray-50 border-b border-gray-200">
+                    <tr>
+                      {['Name', 'URL', 'Active', ''].map(h => (
+                        <th key={h} className="text-left px-3 py-2 font-medium text-gray-500 whitespace-nowrap">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sources.rss_feeds.map((feed, i) => (
+                      <tr key={feed.id} className={`border-b ${i === sources.rss_feeds.length - 1 ? 'border-transparent' : 'border-gray-100'} hover:bg-gray-50`}>
+                        <td className="px-3 py-2">{feed.name}</td>
+                        <td className="px-3 py-2 font-mono text-xs text-gray-500 max-w-xs truncate">{feed.url}</td>
+                        <td className="px-3 py-2">
+                          <button
+                            onClick={() => handleToggle(feed)}
+                            disabled={togglingId === feed.id}
+                            className={`text-xs px-2 py-0.5 rounded border ${
+                              feed.is_active
+                                ? 'bg-green-50 text-green-700 border-green-200'
+                                : 'bg-gray-50 text-gray-400 border-gray-200'
+                            } disabled:opacity-50`}
+                          >
+                            {feed.is_active ? 'on' : 'off'}
+                          </button>
+                        </td>
+                        <td className="px-3 py-2">
+                          <button
+                            onClick={() => handleDelete(feed.id, feed.name)}
+                            className="text-xs text-red-500 hover:text-red-700"
+                          >
+                            Delete
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* Read-only source cards */}
+          {ro && (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="border border-gray-200 rounded p-3">
+                <p className="text-xs font-medium text-gray-600 mb-2">HackerNews</p>
+                <p className="text-xs text-gray-500">Min score: <span className="font-medium text-gray-700">{ro.hackernews.min_score}</span></p>
+                <p className="text-xs text-gray-500">Keywords: <span className="font-medium text-gray-700">{ro.hackernews.keyword_count}</span></p>
+              </div>
+              <div className="border border-gray-200 rounded p-3">
+                <p className="text-xs font-medium text-gray-600 mb-2">Reddit</p>
+                <div className="flex flex-wrap gap-1 mb-1">
+                  {ro.reddit.subreddits.map(s => (
+                    <span key={s} className="category-badge bg-gray-50 text-gray-600 border-gray-200">r/{s}</span>
+                  ))}
+                </div>
+                <p className="text-xs text-gray-500">Min upvotes: <span className="font-medium text-gray-700">{ro.reddit.min_upvotes}</span></p>
+              </div>
+              <div className="border border-gray-200 rounded p-3">
+                <p className="text-xs font-medium text-gray-600 mb-2">Arxiv</p>
+                <div className="flex flex-wrap gap-1 mb-1">
+                  {ro.arxiv.categories.map(c => (
+                    <span key={c} className="category-badge bg-gray-50 text-gray-600 border-gray-200">{c}</span>
+                  ))}
+                </div>
+                <p className="text-xs text-gray-500">Keywords: <span className="font-medium text-gray-700">{ro.arxiv.keyword_count}</span></p>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  )
+}
+
+function CoveragePanel({ adminKey }: { adminKey: string }) {
+  const [coverage, setCoverage] = useState<CoverageDay[]>([])
+  const [loading, setLoading] = useState(true)
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  async function loadCoverage() {
+    try {
+      const data = await adminApi.getCoverage(adminKey)
+      setCoverage(data.coverage)
+    } catch { /* ignore */ }
+    finally { setLoading(false) }
+  }
+
+  useEffect(() => {
+    loadCoverage()
+    intervalRef.current = setInterval(loadCoverage, POLL_COVERAGE_MS)
+    return () => { if (intervalRef.current) clearInterval(intervalRef.current) }
+  }, [adminKey])
+
+  return (
+    <section>
+      <p className="section-heading">Data Coverage (last 90 days)</p>
+      {loading ? (
+        <p className="text-sm text-gray-400">Loading…</p>
+      ) : coverage.length === 0 ? (
+        <p className="text-sm text-gray-400">No data yet.</p>
+      ) : (
+        <div className="border border-gray-200 rounded overflow-x-auto">
+          <table className="w-full text-xs text-gray-700">
+            <thead className="bg-gray-50 border-b border-gray-200">
+              <tr>
+                {['Date', 'Total', 'Enriched', 'Pending', 'Failed', ''].map(h => (
+                  <th key={h} className="text-left px-3 py-2 font-medium text-gray-500 whitespace-nowrap">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {coverage.map((day, i) => (
+                <tr key={day.date} className={`border-b ${i === coverage.length - 1 ? 'border-transparent' : 'border-gray-100'} hover:bg-gray-50`}>
+                  <td className="px-3 py-2 font-mono">{day.date}</td>
+                  <td className="px-3 py-2">{day.total}</td>
+                  <td className="px-3 py-2 text-green-700">{day.enriched}</td>
+                  <td className="px-3 py-2 text-yellow-700">{day.pending}</td>
+                  <td className="px-3 py-2 text-red-700">{day.failed}</td>
+                  <td className="px-3 py-2"><CoverageStatusDot day={day} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  )
+}
+
 export function Admin() {
   const [key, setKey] = useState<string>(() => localStorage.getItem(STORAGE_KEY) ?? '')
   const [keyInput, setKeyInput] = useState('')
@@ -125,6 +409,10 @@ export function Admin() {
   const [error, setError] = useState<string | null>(null)
   const [triggering, setTriggering] = useState(false)
   const [cancelling, setCancelling] = useState(false)
+
+  // Date-range form state — default both to today
+  const [dateFrom, setDateFrom] = useState(isoDate(0))
+  const [dateTo,   setDateTo]   = useState(isoDate(0))
 
   const runsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const runIntervalRef  = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -170,7 +458,6 @@ export function Admin() {
       try {
         const updated = await adminApi.getRun(key, activeRun.id)
         setRuns(prev => prev.map(r => r.id === updated.id ? updated : r))
-        // If now finished, do a full refresh to get correct ordering/status
         if (updated.status !== 'running') {
           fetchRuns(key)
           clearInterval(runIntervalRef.current!)
@@ -179,7 +466,7 @@ export function Admin() {
       } catch { /* ignore transient errors */ }
     }
 
-    if (runIntervalRef.current) return // already polling
+    if (runIntervalRef.current) return
     runIntervalRef.current = setInterval(pollRun, POLL_RUN_MS)
 
     return () => {
@@ -226,10 +513,26 @@ export function Admin() {
     })
   }, [])
 
+  function handleDateFromChange(val: string) {
+    setDateFrom(val)
+    // Clamp: dateTo must not be before dateFrom
+    if (dateTo < val) setDateTo(val)
+  }
+
+  function handleDateToChange(val: string) {
+    setDateTo(val)
+    // Clamp: dateFrom must not be after dateTo
+    if (dateFrom > val) setDateFrom(val)
+  }
+
   async function handleTrigger() {
     setTriggering(true)
     try {
-      await adminApi.triggerIngest(key, 'api')
+      await adminApi.triggerIngest(key, {
+        triggeredBy: 'api',
+        dateFrom,
+        dateTo,
+      })
       await fetchRuns(key)
     } catch (err) {
       if (err instanceof Error && err.message === 'ADMIN_FORBIDDEN') { clearKey(); return }
@@ -300,30 +603,61 @@ export function Admin() {
           <div className="text-xs text-red-600 border border-red-200 bg-red-50 rounded px-3 py-2">{error}</div>
         )}
 
-        {/* Actions */}
-        <section className="flex items-center gap-3">
-          <button
-            onClick={handleTrigger}
-            disabled={!!activeRun || triggering}
-            className="bg-indigo-600 text-white text-sm px-4 py-2 rounded hover:bg-indigo-700 disabled:opacity-50"
-          >
-            {triggering ? 'Starting…' : 'Run Pipeline Now'}
-          </button>
-          {activeRun && (
+        {/* Actions — date-range form */}
+        <section className="space-y-3">
+          <p className="section-heading">Run Pipeline</p>
+          <div className="flex flex-wrap items-end gap-3">
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">From</label>
+              <input
+                type="date"
+                value={dateFrom}
+                max={isoDate(0)}
+                onChange={e => handleDateFromChange(e.target.value)}
+                disabled={!!activeRun}
+                className="border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:border-indigo-500 disabled:opacity-50"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">To</label>
+              <input
+                type="date"
+                value={dateTo}
+                min={dateFrom}
+                max={isoDate(0)}
+                onChange={e => handleDateToChange(e.target.value)}
+                disabled={!!activeRun}
+                className="border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:border-indigo-500 disabled:opacity-50"
+              />
+            </div>
             <button
-              onClick={() => handleCancel(activeRun.id)}
-              disabled={cancelling}
-              className="border border-red-300 text-red-600 text-sm px-4 py-2 rounded hover:bg-red-50 disabled:opacity-50"
+              onClick={handleTrigger}
+              disabled={!!activeRun || triggering}
+              className="bg-indigo-600 text-white text-sm px-4 py-2 rounded hover:bg-indigo-700 disabled:opacity-50"
             >
-              {cancelling ? 'Stopping…' : `Stop Run #${activeRun.id}`}
+              {triggering ? 'Starting…' : 'Run Pipeline'}
             </button>
-          )}
+            {activeRun && (
+              <button
+                onClick={() => handleCancel(activeRun.id)}
+                disabled={cancelling}
+                className="border border-red-300 text-red-600 text-sm px-4 py-2 rounded hover:bg-red-50 disabled:opacity-50"
+              >
+                {cancelling ? 'Stopping…' : `Stop Run #${activeRun.id}`}
+              </button>
+            )}
+          </div>
         </section>
 
         {/* Live progress */}
         {activeRun && (
           <section>
-            <p className="section-heading">Run #{activeRun.id} · {activeRun.target_date}</p>
+            <p className="section-heading">
+              Run #{activeRun.id} · {activeRun.target_date}
+              {activeRun.date_to && activeRun.date_to !== activeRun.target_date
+                ? ` → ${activeRun.date_to}`
+                : ''}
+            </p>
             <ProgressPanel run={activeRun} />
           </section>
         )}
@@ -343,10 +677,19 @@ export function Admin() {
               </div>
               <p className="text-xs text-gray-400">
                 via {latestSuccess.triggered_by} · {formatDuration(latestSuccess.duration_seconds)} · {formatDate(latestSuccess.started_at)}
+                {latestSuccess.date_to && latestSuccess.date_to !== latestSuccess.target_date
+                  ? ` · ${latestSuccess.target_date} → ${latestSuccess.date_to}`
+                  : ` · ${latestSuccess.target_date}`}
               </p>
             </div>
           </section>
         )}
+
+        {/* Sources panel */}
+        <SourcesPanel adminKey={key} />
+
+        {/* Coverage panel */}
+        <CoveragePanel adminKey={key} />
 
         {/* Run history */}
         <section>
@@ -358,7 +701,7 @@ export function Admin() {
               <table className="w-full text-xs text-gray-700">
                 <thead className="bg-gray-50 border-b border-gray-200">
                   <tr>
-                    {['#', 'Status', 'Date', 'Started', 'Duration', 'Fetched', 'New', 'Saved', 'Enriched', 'By'].map(h => (
+                    {['#', 'Status', 'Date range', 'Started', 'Duration', 'Fetched', 'New', 'Saved', 'Enriched', 'By'].map(h => (
                       <th key={h} className="text-left px-3 py-2 font-medium text-gray-500 whitespace-nowrap">{h}</th>
                     ))}
                   </tr>
@@ -367,12 +710,30 @@ export function Admin() {
                   {runs.map((run, i) => {
                     const isLast = i === runs.length - 1
                     const hasFailed = run.status === 'failed' && run.error_message
+                    const dateFrom = run.target_date
+                    const dateTo   = run.date_to
+                                  ?? run.progress?.date_to
+                                  ?? run.result.date_to
+                                  ?? run.target_date
+                    const isBackfill = dateTo !== dateFrom
+                    const dayCount = isBackfill
+                      ? Math.round((new Date(dateTo).getTime() - new Date(dateFrom).getTime()) / 86_400_000) + 1
+                      : null
                     return (
                       <>
                         <tr key={run.id} className={`border-b ${isLast ? 'border-transparent' : 'border-gray-100'} hover:bg-gray-50`}>
                           <td className="px-3 py-2 text-gray-400">{run.id}</td>
                           <td className="px-3 py-2 whitespace-nowrap"><StatusBadge status={run.status} /></td>
-                          <td className="px-3 py-2 whitespace-nowrap">{run.target_date}</td>
+                          <td className="px-3 py-2 whitespace-nowrap">
+                            <span className="font-mono">{dateFrom}</span>
+                            <span className="text-gray-400 mx-1">→</span>
+                            <span className="font-mono">{dateTo}</span>
+                            {isBackfill && (
+                              <span className="ml-2 text-xs bg-indigo-50 text-indigo-600 border border-indigo-200 rounded px-1.5 py-0.5">
+                                backfill · {dayCount}d
+                              </span>
+                            )}
+                          </td>
                           <td className="px-3 py-2 whitespace-nowrap">{formatDate(run.started_at)}</td>
                           <td className="px-3 py-2 whitespace-nowrap">{formatDuration(run.duration_seconds)}</td>
                           <td className="px-3 py-2">{run.result.fetched ?? '—'}</td>

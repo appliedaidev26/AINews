@@ -1,7 +1,7 @@
 from datetime import datetime, date
 from typing import Optional
 from sqlalchemy import (
-    Column, Integer, String, Text, DateTime, Date, Float,
+    Column, Integer, String, Text, DateTime, Date, Float, Boolean,
     ForeignKey, UniqueConstraint, Index, func
 )
 from sqlalchemy.dialects.postgresql import JSONB, ARRAY
@@ -119,10 +119,11 @@ class PipelineRun(Base):
     started_at       = Column(DateTime(timezone=True), nullable=False)
     completed_at     = Column(DateTime(timezone=True), nullable=True)
     status           = Column(String(20), nullable=False, default="running", index=True)  # running|success|failed|cancelled
-    target_date      = Column(String(20), nullable=False)
+    target_date      = Column(String(20), nullable=False)   # date_from (ISO string) — kept for compat
+    date_to          = Column(String(20), nullable=True)    # null → single-date run; set → range run
     triggered_by     = Column(String(50), nullable=False, default="api")
-    result           = Column(JSONB, nullable=True)   # {"fetched","new","saved","enriched","date"}
-    progress         = Column(JSONB, nullable=True)   # {"stage","fetched","new","saved","enriched","total_to_enrich"}
+    result           = Column(JSONB, nullable=True)   # {"fetched","new","saved","enriched","date_from","date_to"}
+    progress         = Column(JSONB, nullable=True)   # {"stage","fetched","new","saved","enriched","total_to_enrich","current_date","dates_completed","dates_total"}
     error_message    = Column(Text, nullable=True)
     duration_seconds = Column(Float, nullable=True)
 
@@ -133,9 +134,31 @@ class PipelineRun(Base):
             "completed_at":     self.completed_at.isoformat() if self.completed_at else None,
             "status":           self.status,
             "target_date":      self.target_date,
+            "date_to":          self.date_to,
             "triggered_by":     self.triggered_by,
             "result":           self.result or {},
             "progress":         self.progress or {},
             "error_message":    self.error_message,
             "duration_seconds": self.duration_seconds,
+        }
+
+
+class RssFeed(Base):
+    __tablename__ = "rss_feeds"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), nullable=False)
+    url = Column(String(2000), nullable=False, unique=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), default=func.now())
+    updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now())
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "url": self.url,
+            "is_active": self.is_active,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
