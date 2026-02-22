@@ -14,21 +14,35 @@ const ROLE_LABELS: Record<string, string> = {
   researcher: 'Researcher',
 }
 
-type DatePreset = 'today' | 'yesterday' | 'week' | 'month' | 'all'
+type DatePreset = 'today' | 'week' | 'month' | 'pick_month' | 'all'
 
 const DATE_PRESETS: { value: DatePreset; label: string }[] = [
-  { value: 'today',     label: 'Today' },
-  { value: 'yesterday', label: 'Yesterday' },
-  { value: 'week',      label: 'This Week' },
-  { value: 'month',     label: 'This Month' },
-  { value: 'all',       label: 'All' },
+  { value: 'today',      label: 'Today' },
+  { value: 'week',       label: 'This Week' },
+  { value: 'month',      label: 'This Month' },
+  { value: 'all',        label: 'All' },
 ]
 
 function toISODate(d: Date): string {
   return d.toISOString().slice(0, 10)
 }
 
-function dateRangeForPreset(preset: DatePreset): { date_from?: string; date_to?: string } {
+// Generate last N calendar months as { value: 'YYYY-MM', label: 'Mon YYYY' }
+function recentMonths(count = 12) {
+  const months = []
+  const d = new Date()
+  for (let i = 0; i < count; i++) {
+    const label = d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' })
+    const value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+    months.push({ value, label })
+    d.setMonth(d.getMonth() - 1)
+  }
+  return months
+}
+
+const MONTHS = recentMonths(12)
+
+function dateRangeForPreset(preset: DatePreset, rangeFrom: string | null, rangeTo: string | null): { date_from?: string; date_to?: string } {
   const today = new Date()
   today.setHours(0, 0, 0, 0)
 
@@ -39,11 +53,21 @@ function dateRangeForPreset(preset: DatePreset): { date_from?: string; date_to?:
   }
 
   switch (preset) {
-    case 'today':     return { date_from: toISODate(today), date_to: toISODate(today) }
-    case 'yesterday': return { date_from: offset(1), date_to: offset(1) }
-    case 'week':      return { date_from: offset(6), date_to: toISODate(today) }
-    case 'month':     return { date_from: offset(29), date_to: toISODate(today) }
-    case 'all':       return {}
+    case 'today':  return { date_from: toISODate(today), date_to: toISODate(today) }
+    case 'week':   return { date_from: offset(6), date_to: toISODate(today) }
+    case 'month':  return { date_from: offset(29), date_to: toISODate(today) }
+    case 'all':    return {}
+    case 'pick_month': {
+      if (!rangeFrom && !rangeTo) return {}
+      const from = rangeFrom ?? rangeTo!
+      const to   = rangeTo   ?? rangeFrom!
+      const [fy, fm] = from.split('-').map(Number)
+      const [ty, tm] = to.split('-').map(Number)
+      return {
+        date_from: toISODate(new Date(fy, fm - 1, 1)),
+        date_to:   toISODate(new Date(ty, tm, 0)),
+      }
+    }
   }
 }
 
@@ -53,6 +77,8 @@ export function Feed() {
   const [articles, setArticles] = useState<Article[]>([])
   const [filters, setFilters] = useState<SidebarFilters>({ category: '', topics: [], sources: [] })
   const [datePreset, setDatePreset] = useState<DatePreset>('today')
+  const [rangeFrom, setRangeFrom] = useState<string | null>(MONTHS[0].value)
+  const [rangeTo,   setRangeTo]   = useState<string | null>(MONTHS[0].value)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [page, setPage] = useState(1)
@@ -62,7 +88,7 @@ export function Feed() {
 
   useEffect(() => {
     setPage(1)
-  }, [filters, datePreset, profile])
+  }, [filters, datePreset, rangeFrom, rangeTo, profile])
 
 
 
@@ -75,7 +101,7 @@ export function Feed() {
       try {
         const tagsParam = filters.topics.length > 0 ? filters.topics.join(',') : undefined
         const sourceParam = filters.sources.length > 0 ? filters.sources.join(',') : undefined
-        const dateRange = dateRangeForPreset(datePreset)
+        const dateRange = dateRangeForPreset(datePreset, rangeFrom, rangeTo)
 
         if (profile) {
           const res = await api.getPersonalizedFeed({
@@ -112,7 +138,7 @@ export function Feed() {
 
     fetchFeed()
     return () => { cancelled = true }
-  }, [profile, filters, datePreset, page])
+  }, [profile, filters, datePreset, rangeFrom, rangeTo, page])
 
   const totalPages = Math.ceil(total / PER_PAGE)
 
@@ -153,7 +179,7 @@ export function Feed() {
       </div>
 
       {/* Date filter pills */}
-      <div className="flex items-center gap-1.5 mb-5">
+      <div className="flex items-center gap-1.5 mb-5 flex-wrap">
         {DATE_PRESETS.map(({ value, label }) => (
           <button
             key={value}
@@ -167,6 +193,50 @@ export function Feed() {
             {label}
           </button>
         ))}
+        {/* Month range picker — two selects in one bordered pill */}
+        <div className={`flex items-center gap-1 px-2 py-0.5 rounded-full border transition-colors ${
+          datePreset === 'pick_month'
+            ? 'border-indigo-600'
+            : 'border-gray-200 hover:border-gray-400'
+        }`}>
+          <select
+            value={rangeFrom ?? ''}
+            onChange={(e) => {
+              const v = e.target.value
+              setRangeFrom(v)
+              if (rangeTo && v > rangeTo) setRangeTo(v)
+              setDatePreset('pick_month')
+              setPage(1)
+            }}
+            className={`text-xs appearance-none cursor-pointer bg-transparent outline-none ${
+              datePreset === 'pick_month' ? 'text-indigo-600' : 'text-gray-500'
+            }`}
+          >
+            <option value="" disabled>From…</option>
+            {MONTHS.map(({ value, label }) => (
+              <option key={value} value={value}>{label}</option>
+            ))}
+          </select>
+          <span className={`text-xs ${datePreset === 'pick_month' ? 'text-indigo-400' : 'text-gray-300'}`}>–</span>
+          <select
+            value={rangeTo ?? ''}
+            onChange={(e) => {
+              const v = e.target.value
+              setRangeTo(v)
+              if (rangeFrom && v < rangeFrom) setRangeFrom(v)
+              setDatePreset('pick_month')
+              setPage(1)
+            }}
+            className={`text-xs appearance-none cursor-pointer bg-transparent outline-none ${
+              datePreset === 'pick_month' ? 'text-indigo-600' : 'text-gray-500'
+            }`}
+          >
+            <option value="" disabled>To…</option>
+            {MONTHS.map(({ value, label }) => (
+              <option key={value} value={value}>{label}</option>
+            ))}
+          </select>
+        </div>
       </div>
 
       {/* Two-column layout */}
