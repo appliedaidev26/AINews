@@ -119,6 +119,16 @@ export const api = {
 
 // --- Admin types ---
 export interface PipelineRunResult { fetched: number; new: number; saved: number; enriched: number; date: string }
+export type PipelineStage = 'fetching' | 'filtering' | 'deduping' | 'saving' | 'enriching'
+export interface PipelineProgress {
+  stage: PipelineStage
+  fetched?: number
+  new?: number
+  deduped?: number
+  saved?: number
+  enriched?: number
+  total_to_enrich?: number
+}
 export interface PipelineRun {
   id: number
   started_at: string
@@ -127,6 +137,7 @@ export interface PipelineRun {
   target_date: string
   triggered_by: string
   result: Partial<PipelineRunResult>
+  progress: Partial<PipelineProgress>
   error_message: string | null
   duration_seconds: number | null
 }
@@ -145,6 +156,8 @@ async function adminFetch<T>(method: string, path: string, key: string, params?:
 export const adminApi = {
   getRuns: (key: string, limit = 50) =>
     adminFetch<RunsResponse>('GET', '/admin/runs', key, { limit }),
+  getRun: (key: string, runId: number) =>
+    adminFetch<PipelineRun>('GET', `/admin/runs/${runId}`, key),
   triggerIngest: (key: string, triggeredBy = 'api', targetDate?: string) =>
     adminFetch<{ status: string; date: string; run_id: number }>(
       'POST', '/admin/ingest', key,

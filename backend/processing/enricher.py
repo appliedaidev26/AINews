@@ -233,7 +233,7 @@ def _enrich_one(article: Article, session: Session, use_openai: bool = False) ->
     return True
 
 
-async def enrich_articles(saved_ids: list[int], force_provider: str = "auto") -> int:
+async def enrich_articles(saved_ids: list[int], force_provider: str = "auto", run_id=None, fetched=0, new=0, saved_count=0) -> int:
     """
     Enrich articles by ID. Returns count of successfully enriched articles.
     Aborts immediately if the API key, model, or quota is invalid.
@@ -302,6 +302,9 @@ async def enrich_articles(saved_ids: list[int], force_provider: str = "auto") ->
                     enriched_count += 1
                     consecutive_failures = 0
                     logger.info(f"Enriched article {article.id} ({enriched_count}/{len(saved_ids)})")
+                    if run_id is not None:
+                        from backend.ingestion.pipeline import _update_progress
+                        _update_progress(run_id, {"stage": "enriching", "fetched": fetched, "new": new, "saved": saved_count, "enriched": enriched_count, "total_to_enrich": len(saved_ids)})
                 else:
                     consecutive_failures += 1
                     if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:

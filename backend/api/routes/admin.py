@@ -71,6 +71,20 @@ async def cancel_run(
     return {"status": "cancelling", "run_id": run_id}
 
 
+@router.get("/runs/{run_id}")
+async def get_run(
+    run_id: int,
+    x_admin_key: str = Header(...),
+    db: AsyncSession = Depends(get_db),
+):
+    _check_key(x_admin_key)
+    result = await db.execute(select(PipelineRun).where(PipelineRun.id == run_id))
+    run = result.scalar_one_or_none()
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return run.to_dict()
+
+
 @router.get("/runs")
 async def list_runs(
     limit: int = Query(50, ge=1, le=200),

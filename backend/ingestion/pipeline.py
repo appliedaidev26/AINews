@@ -22,6 +22,20 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logger = logging.getLogger(__name__)
 
 
+def _update_progress(run_id, progress: dict):
+    if run_id is None:
+        return
+    from sqlalchemy.orm import Session as _Session
+    from sqlalchemy import update as sa_update
+    from backend.db import sync_engine
+    from backend.db.models import PipelineRun
+    with _Session(sync_engine) as session:
+        session.execute(
+            sa_update(PipelineRun).where(PipelineRun.id == run_id).values(progress=progress)
+        )
+        session.commit()
+
+
 def _update_run(run_id, status, result=None, error_message=None, duration_seconds=None):
     if run_id is None:
         return
@@ -71,6 +85,7 @@ async def run_pipeline(target_date: Optional[date] = None, run_id: Optional[int]
     logger.info(f"Starting ingestion pipeline for {target_date}")
     try:
         # --- Step 1: Fetch from all sources ---
+        _update_progress(run_id, {"stage": "fetching"})
         hn_articles, reddit_articles, arxiv_articles, rss_articles = await asyncio.gather(
             fetch_hackernews(target_date),
             asyncio.to_thread(fetch_reddit, target_date),
@@ -82,6 +97,7 @@ async def run_pipeline(target_date: Optional[date] = None, run_id: Optional[int]
         logger.info(f"Fetched {len(raw_articles)} total raw articles")
 
         # --- Step 2: Filter already-ingested ---
+        _update_progress(run_id, {"stage": "filtering", "fetched": len(raw_articles)})
         with Session(sync_engine) as session:
             existing_hashes = _get_existing_hashes(session, target_date)
             new_articles = [a for a in raw_articles if a["dedup_hash"] not in existing_hashes]
@@ -94,15 +110,18 @@ async def run_pipeline(target_date: Optional[date] = None, run_id: Optional[int]
                 return result
 
             # --- Step 3: Semantic deduplication ---
+            _update_progress(run_id, {"stage": "deduping", "fetched": len(raw_articles), "new": len(new_articles)})
             deduped = await asyncio.to_thread(deduplicate_articles, new_articles)
             logger.info(f"{len(deduped)} articles after semantic dedup")
 
             # --- Step 4: Save to DB ---
+            _update_progress(run_id, {"stage": "saving", "fetched": len(raw_articles), "new": len(new_articles), "deduped": len(deduped)})
             saved = _save_articles(session, deduped)
             logger.info(f"Saved {len(saved)} articles to database")
 
         # --- Step 5: Enrich with Gemini ---
-        enriched_count = await enrich_articles(saved_ids=[a.id for a in saved])
+        _update_progress(run_id, {"stage": "enriching", "fetched": len(raw_articles), "new": len(new_articles), "saved": len(saved), "enriched": 0, "total_to_enrich": len(saved)})
+        enriched_count = await enrich_articles(saved_ids=[a.id for a in saved], run_id=run_id, fetched=len(raw_articles), new=len(new_articles), saved_count=len(saved))
         logger.info(f"Enriched {enriched_count} articles")
 
         result = {

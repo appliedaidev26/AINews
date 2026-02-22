@@ -1,9 +1,18 @@
 import { useState, useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
-import { adminApi, type PipelineRun } from '../lib/api'
+import { adminApi, type PipelineRun, type PipelineStage } from '../lib/api'
 
 const STORAGE_KEY = 'ainews_admin_key'
-const POLL_INTERVAL_MS = 10_000
+const POLL_RUNS_MS = 15_000   // refresh full list every 15s
+const POLL_RUN_MS  = 3_000    // poll active run every 3s for progress
+
+const STAGE_LABELS: Record<PipelineStage, string> = {
+  fetching:  'Fetching articles from HN, Reddit, Arxiv, RSS…',
+  filtering: 'Filtering already-seen articles…',
+  deduping:  'Deduplicating similar articles…',
+  saving:    'Saving to database…',
+  enriching: 'Summarizing with Gemini…',
+}
 
 function formatDuration(seconds: number | null): string {
   if (seconds === null) return '—'
@@ -35,6 +44,76 @@ function StatusBadge({ status }: { status: PipelineRun['status'] }) {
   )
 }
 
+function ProgressPanel({ run }: { run: PipelineRun }) {
+  const p = run.progress ?? {}
+  const stage = p.stage
+
+  const steps: { key: PipelineStage; label: string; value?: string }[] = [
+    { key: 'fetching',  label: 'Fetch',      value: p.fetched != null ? `${p.fetched} articles` : undefined },
+    { key: 'filtering', label: 'Filter',      value: p.fetched != null && p.new != null ? `${p.new} new of ${p.fetched}` : undefined },
+    { key: 'deduping',  label: 'Dedup',       value: p.deduped != null ? `${p.deduped} unique` : undefined },
+    { key: 'saving',    label: 'Save',         value: p.saved != null ? `${p.saved} saved` : undefined },
+    { key: 'enriching', label: 'Summarize',   value: p.total_to_enrich != null ? `${p.enriched ?? 0} / ${p.total_to_enrich}` : undefined },
+  ]
+
+  const stageOrder: PipelineStage[] = ['fetching', 'filtering', 'deduping', 'saving', 'enriching']
+  const currentIdx = stage ? stageOrder.indexOf(stage) : -1
+
+  return (
+    <div className="border border-gray-200 rounded p-4 space-y-3">
+      {/* Stage label */}
+      <p className="text-sm text-blue-700 font-medium animate-pulse">
+        {stage ? STAGE_LABELS[stage] : 'Starting…'}
+      </p>
+
+      {/* Step pills */}
+      <div className="flex items-center gap-0">
+        {steps.map((step, i) => {
+          const done    = currentIdx > i
+          const active  = currentIdx === i
+          const pending = currentIdx < i
+          return (
+            <div key={step.key} className="flex items-center">
+              <div className={`flex flex-col items-center min-w-[80px] ${pending ? 'opacity-30' : ''}`}>
+                <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-semibold border
+                  ${done    ? 'bg-green-500 border-green-500 text-white' : ''}
+                  ${active  ? 'bg-blue-500 border-blue-500 text-white animate-pulse' : ''}
+                  ${pending ? 'bg-white border-gray-300 text-gray-400' : ''}
+                `}>
+                  {done ? '✓' : i + 1}
+                </div>
+                <span className="text-xs text-gray-500 mt-1 text-center leading-tight">{step.label}</span>
+                {step.value && (done || active) && (
+                  <span className="text-xs font-medium text-gray-700 text-center leading-tight">{step.value}</span>
+                )}
+              </div>
+              {i < steps.length - 1 && (
+                <div className={`h-px w-6 mb-4 ${currentIdx > i ? 'bg-green-400' : 'bg-gray-200'}`} />
+              )}
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Enrichment progress bar */}
+      {stage === 'enriching' && p.total_to_enrich != null && p.total_to_enrich > 0 && (
+        <div className="space-y-1">
+          <div className="flex justify-between text-xs text-gray-500">
+            <span>Enriched {p.enriched ?? 0} of {p.total_to_enrich}</span>
+            <span>{Math.round(((p.enriched ?? 0) / p.total_to_enrich) * 100)}%</span>
+          </div>
+          <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-indigo-500 rounded-full transition-all duration-500"
+              style={{ width: `${((p.enriched ?? 0) / p.total_to_enrich) * 100}%` }}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function Admin() {
   const [key, setKey] = useState<string>(() => localStorage.getItem(STORAGE_KEY) ?? '')
   const [keyInput, setKeyInput] = useState('')
@@ -47,7 +126,8 @@ export function Admin() {
   const [triggering, setTriggering] = useState(false)
   const [cancelling, setCancelling] = useState(false)
 
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const runsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const runIntervalRef  = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const activeRun = runs[0]?.status === 'running' ? runs[0] : null
   const latestSuccess = runs.find(r => r.status === 'success') ?? null
@@ -76,27 +156,52 @@ export function Admin() {
     }
   }
 
-  // Kick off polling when there's an active run
+  // Fast-poll the active run for progress updates
   useEffect(() => {
-    if (!isAuthenticated) return
-
-    if (activeRun) {
-      if (intervalRef.current) return // already polling
-      intervalRef.current = setInterval(() => fetchRuns(key), POLL_INTERVAL_MS)
-    } else {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current)
-        intervalRef.current = null
+    if (!isAuthenticated || !activeRun) {
+      if (runIntervalRef.current) {
+        clearInterval(runIntervalRef.current)
+        runIntervalRef.current = null
       }
+      return
     }
 
+    const pollRun = async () => {
+      try {
+        const updated = await adminApi.getRun(key, activeRun.id)
+        setRuns(prev => prev.map(r => r.id === updated.id ? updated : r))
+        // If now finished, do a full refresh to get correct ordering/status
+        if (updated.status !== 'running') {
+          fetchRuns(key)
+          clearInterval(runIntervalRef.current!)
+          runIntervalRef.current = null
+        }
+      } catch { /* ignore transient errors */ }
+    }
+
+    if (runIntervalRef.current) return // already polling
+    runIntervalRef.current = setInterval(pollRun, POLL_RUN_MS)
+
     return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current)
-        intervalRef.current = null
+      if (runIntervalRef.current) {
+        clearInterval(runIntervalRef.current)
+        runIntervalRef.current = null
       }
     }
   }, [isAuthenticated, activeRun?.id, key])
+
+  // Slow-poll the full run list
+  useEffect(() => {
+    if (!isAuthenticated) return
+    if (runsIntervalRef.current) return
+    runsIntervalRef.current = setInterval(() => fetchRuns(key), POLL_RUNS_MS)
+    return () => {
+      if (runsIntervalRef.current) {
+        clearInterval(runsIntervalRef.current)
+        runsIntervalRef.current = null
+      }
+    }
+  }, [isAuthenticated, key])
 
   async function handleKeySubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -112,7 +217,6 @@ export function Admin() {
     }
   }
 
-  // Auto-authenticate from localStorage key on mount
   useEffect(() => {
     if (!key) return
     setLoading(true)
@@ -183,64 +287,17 @@ export function Admin() {
   // --- Dashboard ---
   return (
     <div className="min-h-screen bg-white">
-      {/* Header */}
       <header className="border-b border-gray-200 px-6 py-3 flex items-center justify-between">
         <h1 className="text-sm font-semibold text-gray-900">AI News Admin</h1>
         <div className="flex items-center gap-4">
           <Link to="/" className="text-xs text-indigo-600 hover:underline">← Feed</Link>
-          <button onClick={clearKey} className="text-xs text-gray-500 hover:text-gray-800">
-            Sign out
-          </button>
+          <button onClick={clearKey} className="text-xs text-gray-500 hover:text-gray-800">Sign out</button>
         </div>
       </header>
 
       <main className="max-w-5xl mx-auto px-6 py-8 space-y-8">
         {error && (
-          <div className="text-xs text-red-600 border border-red-200 bg-red-50 rounded px-3 py-2">
-            {error}
-          </div>
-        )}
-
-        {/* Current status */}
-        <section>
-          <p className="section-heading">Current Status</p>
-          {activeRun ? (
-            <div className="border border-gray-200 rounded p-4 text-sm text-gray-700 space-y-1">
-              <div className="flex items-center gap-3">
-                <StatusBadge status="running" />
-                <span className="font-medium">Run #{activeRun.id}</span>
-                <span className="text-gray-400">·</span>
-                <span>{activeRun.target_date}</span>
-                <span className="text-gray-400">·</span>
-                <span>Started {formatDate(activeRun.started_at)}</span>
-              </div>
-              <p className="text-xs text-gray-400 mt-1">Polling every {POLL_INTERVAL_MS / 1000}s…</p>
-            </div>
-          ) : (
-            <p className="text-sm text-gray-400">No pipeline currently running.</p>
-          )}
-        </section>
-
-        {/* Last run summary */}
-        {latestSuccess && latestSuccess !== activeRun && (
-          <section>
-            <p className="section-heading">Last Run Summary</p>
-            <div className="border border-gray-200 rounded p-4 text-sm text-gray-700">
-              <div className="flex gap-6 mb-2">
-                {(['fetched', 'new', 'saved', 'enriched'] as const).map(k => (
-                  <div key={k} className="text-center">
-                    <p className="text-lg font-semibold text-gray-900">
-                      {latestSuccess.result[k] ?? '—'}
-                    </p>
-                    <p className="text-xs text-gray-400 capitalize">{k}</p>
-                  </div>
-                ))}
-              </div>
-              <p className="text-xs text-gray-400">
-                via {latestSuccess.triggered_by} · {formatDuration(latestSuccess.duration_seconds)}
-              </p>
-            </div>
-          </section>
+          <div className="text-xs text-red-600 border border-red-200 bg-red-50 rounded px-3 py-2">{error}</div>
         )}
 
         {/* Actions */}
@@ -263,7 +320,35 @@ export function Admin() {
           )}
         </section>
 
-        {/* Run history table */}
+        {/* Live progress */}
+        {activeRun && (
+          <section>
+            <p className="section-heading">Run #{activeRun.id} · {activeRun.target_date}</p>
+            <ProgressPanel run={activeRun} />
+          </section>
+        )}
+
+        {/* Last run summary */}
+        {latestSuccess && latestSuccess !== activeRun && (
+          <section>
+            <p className="section-heading">Last Successful Run</p>
+            <div className="border border-gray-200 rounded p-4 text-sm text-gray-700">
+              <div className="flex gap-6 mb-2">
+                {(['fetched', 'new', 'saved', 'enriched'] as const).map(k => (
+                  <div key={k} className="text-center">
+                    <p className="text-lg font-semibold text-gray-900">{latestSuccess.result[k] ?? '—'}</p>
+                    <p className="text-xs text-gray-400 capitalize">{k}</p>
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-gray-400">
+                via {latestSuccess.triggered_by} · {formatDuration(latestSuccess.duration_seconds)} · {formatDate(latestSuccess.started_at)}
+              </p>
+            </div>
+          </section>
+        )}
+
+        {/* Run history */}
         <section>
           <p className="section-heading">Run History</p>
           {runs.length === 0 ? (

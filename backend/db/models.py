@@ -120,6 +120,7 @@ class PipelineRun(Base):
     target_date      = Column(String(20), nullable=False)
     triggered_by     = Column(String(50), nullable=False, default="api")
     result           = Column(JSONB, nullable=True)   # {"fetched","new","saved","enriched","date"}
+    progress         = Column(JSONB, nullable=True)   # {"stage","fetched","new","saved","enriched","total_to_enrich"}
     error_message    = Column(Text, nullable=True)
     duration_seconds = Column(Float, nullable=True)
 
@@ -132,6 +133,7 @@ class PipelineRun(Base):
             "target_date":      self.target_date,
             "triggered_by":     self.triggered_by,
             "result":           self.result or {},
+            "progress":         self.progress or {},
             "error_message":    self.error_message,
             "duration_seconds": self.duration_seconds,
         }
