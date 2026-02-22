@@ -19,3 +19,9 @@ async def get_db() -> AsyncSession:
 async def create_tables():
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Additive column migrations — safe to re-run (IF NOT EXISTS)
+        await conn.execute(
+            __import__("sqlalchemy").text(
+                "ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS progress JSONB"
+            )
+        )
