@@ -116,3 +116,40 @@ export const api = {
   getPersonalizedFeed: (params?: { category?: string; tags?: string; source_type?: string; page?: number }) =>
     authGet<FeedResponse>('/profile/feed', params as Record<string, string | number>),
 }
+
+// --- Admin types ---
+export interface PipelineRunResult { fetched: number; new: number; saved: number; enriched: number; date: string }
+export interface PipelineRun {
+  id: number
+  started_at: string
+  completed_at: string | null
+  status: 'running' | 'success' | 'failed' | 'cancelled'
+  target_date: string
+  triggered_by: string
+  result: Partial<PipelineRunResult>
+  error_message: string | null
+  duration_seconds: number | null
+}
+export interface RunsResponse { runs: PipelineRun[]; total: number }
+
+// --- Admin API helpers ---
+async function adminFetch<T>(method: string, path: string, key: string, params?: Record<string, string | number>): Promise<T> {
+  const url = new URL(BASE + path, window.location.origin)
+  if (params) Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, String(v)))
+  const res = await fetch(url.toString(), { method, headers: { 'X-Admin-Key': key } })
+  if (res.status === 403) throw new Error('ADMIN_FORBIDDEN')
+  if (!res.ok) throw new Error(`API error ${res.status}`)
+  return res.json()
+}
+
+export const adminApi = {
+  getRuns: (key: string, limit = 50) =>
+    adminFetch<RunsResponse>('GET', '/admin/runs', key, { limit }),
+  triggerIngest: (key: string, triggeredBy = 'api', targetDate?: string) =>
+    adminFetch<{ status: string; date: string; run_id: number }>(
+      'POST', '/admin/ingest', key,
+      { triggered_by: triggeredBy, ...(targetDate ? { target_date: targetDate } : {}) }
+    ),
+  cancelRun: (key: string, runId: number) =>
+    adminFetch<{ status: string; run_id: number }>('POST', `/admin/runs/${runId}/cancel`, key),
+}

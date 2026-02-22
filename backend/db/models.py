@@ -108,3 +108,30 @@ class UserArticleScore(Base):
         UniqueConstraint("user_id", "article_id", name="uq_user_article"),
         Index("ix_user_article_scores_user_date", "user_id", "computed_at"),
     )
+
+
+class PipelineRun(Base):
+    __tablename__ = "pipeline_runs"
+
+    id               = Column(Integer, primary_key=True, index=True)
+    started_at       = Column(DateTime(timezone=True), nullable=False)
+    completed_at     = Column(DateTime(timezone=True), nullable=True)
+    status           = Column(String(20), nullable=False, default="running", index=True)  # running|success|failed|cancelled
+    target_date      = Column(String(20), nullable=False)
+    triggered_by     = Column(String(50), nullable=False, default="api")
+    result           = Column(JSONB, nullable=True)   # {"fetched","new","saved","enriched","date"}
+    error_message    = Column(Text, nullable=True)
+    duration_seconds = Column(Float, nullable=True)
+
+    def to_dict(self):
+        return {
+            "id":               self.id,
+            "started_at":       self.started_at.isoformat() if self.started_at else None,
+            "completed_at":     self.completed_at.isoformat() if self.completed_at else None,
+            "status":           self.status,
+            "target_date":      self.target_date,
+            "triggered_by":     self.triggered_by,
+            "result":           self.result or {},
+            "error_message":    self.error_message,
+            "duration_seconds": self.duration_seconds,
+        }

@@ -1,7 +1,8 @@
 """Main ingestion pipeline: fetches, deduplicates, and enriches articles."""
 import asyncio
 import logging
-from datetime import date
+import time
+from datetime import date, datetime, timezone
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -19,6 +20,26 @@ from backend.processing.enricher import enrich_articles
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger(__name__)
+
+
+def _update_run(run_id, status, result=None, error_message=None, duration_seconds=None):
+    if run_id is None:
+        return
+    from sqlalchemy.orm import Session as _Session
+    from sqlalchemy import update as sa_update
+    from backend.db import sync_engine
+    from backend.db.models import PipelineRun
+    with _Session(sync_engine) as session:
+        session.execute(
+            sa_update(PipelineRun).where(PipelineRun.id == run_id).values(
+                status=status,
+                completed_at=datetime.now(timezone.utc),
+                result=result,
+                error_message=error_message,
+                duration_seconds=duration_seconds,
+            )
+        )
+        session.commit()
 
 
 def _get_existing_hashes(session: Session, target_date: date) -> set[str]:
@@ -44,50 +65,61 @@ def _save_articles(session: Session, articles: list[dict]) -> list[Article]:
     return saved
 
 
-async def run_pipeline(target_date: Optional[date] = None) -> dict:
+async def run_pipeline(target_date: Optional[date] = None, run_id: Optional[int] = None) -> dict:
     target_date = target_date or date.today()
+    t0 = time.monotonic()
     logger.info(f"Starting ingestion pipeline for {target_date}")
+    try:
+        # --- Step 1: Fetch from all sources ---
+        hn_articles, reddit_articles, arxiv_articles, rss_articles = await asyncio.gather(
+            fetch_hackernews(target_date),
+            asyncio.to_thread(fetch_reddit, target_date),
+            asyncio.to_thread(fetch_arxiv, target_date),
+            asyncio.to_thread(fetch_rss, target_date),
+        )
 
-    # --- Step 1: Fetch from all sources ---
-    hn_articles, reddit_articles, arxiv_articles, rss_articles = await asyncio.gather(
-        fetch_hackernews(target_date),
-        asyncio.to_thread(fetch_reddit, target_date),
-        asyncio.to_thread(fetch_arxiv, target_date),
-        asyncio.to_thread(fetch_rss, target_date),
-    )
+        raw_articles = hn_articles + reddit_articles + arxiv_articles + rss_articles
+        logger.info(f"Fetched {len(raw_articles)} total raw articles")
 
-    raw_articles = hn_articles + reddit_articles + arxiv_articles + rss_articles
-    logger.info(f"Fetched {len(raw_articles)} total raw articles")
+        # --- Step 2: Filter already-ingested ---
+        with Session(sync_engine) as session:
+            existing_hashes = _get_existing_hashes(session, target_date)
+            new_articles = [a for a in raw_articles if a["dedup_hash"] not in existing_hashes]
+            logger.info(f"{len(new_articles)} new articles after hash filter (skipped {len(raw_articles) - len(new_articles)})")
 
-    # --- Step 2: Filter already-ingested ---
-    with Session(sync_engine) as session:
-        existing_hashes = _get_existing_hashes(session, target_date)
-        new_articles = [a for a in raw_articles if a["dedup_hash"] not in existing_hashes]
-        logger.info(f"{len(new_articles)} new articles after hash filter (skipped {len(raw_articles) - len(new_articles)})")
+            if not new_articles:
+                logger.info("No new articles to process")
+                result = {"fetched": len(raw_articles), "new": 0, "saved": 0, "enriched": 0, "date": str(target_date)}
+                _update_run(run_id, "success", result=result, duration_seconds=time.monotonic() - t0)
+                return result
 
-        if not new_articles:
-            logger.info("No new articles to process")
-            return {"fetched": len(raw_articles), "new": 0, "enriched": 0}
+            # --- Step 3: Semantic deduplication ---
+            deduped = await asyncio.to_thread(deduplicate_articles, new_articles)
+            logger.info(f"{len(deduped)} articles after semantic dedup")
 
-        # --- Step 3: Semantic deduplication ---
-        deduped = await asyncio.to_thread(deduplicate_articles, new_articles)
-        logger.info(f"{len(deduped)} articles after semantic dedup")
+            # --- Step 4: Save to DB ---
+            saved = _save_articles(session, deduped)
+            logger.info(f"Saved {len(saved)} articles to database")
 
-        # --- Step 4: Save to DB ---
-        saved = _save_articles(session, deduped)
-        logger.info(f"Saved {len(saved)} articles to database")
+        # --- Step 5: Enrich with Gemini ---
+        enriched_count = await enrich_articles(saved_ids=[a.id for a in saved])
+        logger.info(f"Enriched {enriched_count} articles")
 
-    # --- Step 5: Enrich with Gemini ---
-    enriched_count = await enrich_articles(saved_ids=[a.id for a in saved])
-    logger.info(f"Enriched {enriched_count} articles")
-
-    return {
-        "fetched": len(raw_articles),
-        "new": len(deduped),
-        "saved": len(saved),
-        "enriched": enriched_count,
-        "date": str(target_date),
-    }
+        result = {
+            "fetched": len(raw_articles),
+            "new": len(deduped),
+            "saved": len(saved),
+            "enriched": enriched_count,
+            "date": str(target_date),
+        }
+        _update_run(run_id, "success", result=result, duration_seconds=time.monotonic() - t0)
+        return result
+    except asyncio.CancelledError:
+        _update_run(run_id, "cancelled", error_message="Cancelled by admin", duration_seconds=time.monotonic() - t0)
+        raise
+    except Exception as exc:
+        _update_run(run_id, "failed", error_message=str(exc), duration_seconds=time.monotonic() - t0)
+        raise
 
 
 if __name__ == "__main__":
