@@ -58,6 +58,9 @@ export interface DigestResponse {
   articles: Article[]
 }
 
+export interface TrendingArticle extends Article { trending_score: number }
+export interface TrendingResponse { hours: number; limit: number; articles: TrendingArticle[] }
+
 async function authHeaders(): Promise<Record<string, string>> {
   const user = auth.currentUser
   if (!user) return {}
@@ -105,6 +108,9 @@ export const api = {
 
   getArticle: (id: number) => get<ArticleDetail>(`/articles/${id}`),
 
+  getTrending: (params?: { hours?: number; limit?: number }) =>
+    get<TrendingResponse>('/articles/trending', params as Record<string, string | number>),
+
   getDigestToday: (category?: string) =>
     get<DigestResponse>('/digest/today', category ? { category } : undefined),
 
@@ -119,7 +125,7 @@ export const api = {
 }
 
 // --- Admin types ---
-export interface PipelineRunResult { fetched: number; new: number; saved: number; enriched: number; date: string }
+export interface PipelineRunResult { fetched: number; new: number; saved: number; enriched: number; date_from: string; date_to: string }
 export type PipelineStage = 'fetching' | 'filtering' | 'deduping' | 'saving' | 'enriching'
 export interface PipelineProgress {
   stage: PipelineStage
@@ -129,6 +135,11 @@ export interface PipelineProgress {
   saved?: number
   enriched?: number
   total_to_enrich?: number
+  current_date?: string
+  dates_completed?: number
+  dates_total?: number
+  date_from?: string
+  date_to?: string
 }
 export interface PipelineRun {
   id: number
@@ -136,6 +147,7 @@ export interface PipelineRun {
   completed_at: string | null
   status: 'running' | 'success' | 'failed' | 'cancelled'
   target_date: string
+  date_to: string | null
   triggered_by: string
   result: Partial<PipelineRunResult>
   progress: Partial<PipelineProgress>
@@ -143,6 +155,30 @@ export interface PipelineRun {
   duration_seconds: number | null
 }
 export interface RunsResponse { runs: PipelineRun[]; total: number }
+
+export interface CoverageDay {
+  date: string; total: number; enriched: number; pending: number; failed: number
+}
+export interface CoverageResponse { coverage: CoverageDay[] }
+
+// --- Sources types ---
+export interface RssFeed {
+  id: number
+  name: string
+  url: string
+  is_active: boolean
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface SourcesResponse {
+  rss_feeds: RssFeed[]
+  readonly: {
+    hackernews: { min_score: number; keyword_count: number }
+    reddit: { subreddits: string[]; min_upvotes: number }
+    arxiv: { categories: string[]; keyword_count: number }
+  }
+}
 
 // --- Admin API helpers ---
 async function adminFetch<T>(method: string, path: string, key: string, params?: Record<string, string | number>): Promise<T> {
@@ -154,16 +190,47 @@ async function adminFetch<T>(method: string, path: string, key: string, params?:
   return res.json()
 }
 
+async function adminFetchBody<T>(method: string, path: string, key: string, body: unknown): Promise<T> {
+  const res = await fetch(BASE + path, {
+    method,
+    headers: { 'X-Admin-Key': key, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (res.status === 403) throw new Error('ADMIN_FORBIDDEN')
+  if (!res.ok) {
+    const data = await res.json().catch(() => null)
+    throw new Error(data?.detail ?? `API error ${res.status}`)
+  }
+  return res.json()
+}
+
 export const adminApi = {
   getRuns: (key: string, limit = 50) =>
     adminFetch<RunsResponse>('GET', '/admin/runs', key, { limit }),
   getRun: (key: string, runId: number) =>
     adminFetch<PipelineRun>('GET', `/admin/runs/${runId}`, key),
-  triggerIngest: (key: string, triggeredBy = 'api', targetDate?: string) =>
-    adminFetch<{ status: string; date: string; run_id: number }>(
-      'POST', '/admin/ingest', key,
-      { triggered_by: triggeredBy, ...(targetDate ? { target_date: targetDate } : {}) }
+  triggerIngest: (key: string, opts: {
+    triggeredBy?: string;
+    dateFrom?: string;   // YYYY-MM-DD
+    dateTo?: string;     // YYYY-MM-DD
+  } = {}) =>
+    adminFetch<{ status: string; date_from: string; date_to: string; run_id: number }>(
+      'POST', '/admin/ingest', key, {
+        triggered_by: opts.triggeredBy ?? 'api',
+        ...(opts.dateFrom ? { date_from: opts.dateFrom } : {}),
+        ...(opts.dateTo   ? { date_to:   opts.dateTo   } : {}),
+      }
     ),
   cancelRun: (key: string, runId: number) =>
     adminFetch<{ status: string; run_id: number }>('POST', `/admin/runs/${runId}/cancel`, key),
+  getCoverage: (key: string, days = 90) =>
+    adminFetch<CoverageResponse>('GET', '/admin/coverage', key, { days }),
+  getSources: (key: string) =>
+    adminFetch<SourcesResponse>('GET', '/admin/sources', key),
+  addRssFeed: (key: string, feed: { name: string; url: string }) =>
+    adminFetchBody<RssFeed>('POST', '/admin/sources/rss', key, feed),
+  updateRssFeed: (key: string, id: number, feed: { name: string; url: string; is_active: boolean }) =>
+    adminFetchBody<RssFeed>('PUT', `/admin/sources/rss/${id}`, key, feed),
+  deleteRssFeed: (key: string, id: number) =>
+    adminFetch<{ status: string; id: number }>('DELETE', `/admin/sources/rss/${id}`, key),
 }

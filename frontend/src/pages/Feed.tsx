@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { api, type Article } from '../lib/api'
+import { api, type Article, type TrendingArticle } from '../lib/api'
 import { ArticleCard } from '../components/ArticleCard'
 import { Sidebar, type SidebarFilters } from '../components/Sidebar'
+import { TrendingStrip } from '../components/TrendingStrip'
 import { useUserProfile } from '../hooks/useUserProfile'
 import { useAuth } from '../hooks/useAuth'
 
@@ -24,7 +25,11 @@ const DATE_PRESETS: { value: DatePreset; label: string }[] = [
 ]
 
 function toISODate(d: Date): string {
-  return d.toISOString().slice(0, 10)
+  // Use local date parts to avoid UTC offset shifting the date (e.g. Jan 1 local → Dec 31 UTC in UTC+ zones)
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
 }
 
 // Generate last N calendar months as { value: 'YYYY-MM', label: 'Mon YYYY' }
@@ -55,7 +60,10 @@ function dateRangeForPreset(preset: DatePreset, rangeFrom: string | null, rangeT
   switch (preset) {
     case 'today':  return { date_from: toISODate(today), date_to: toISODate(today) }
     case 'week':   return { date_from: offset(6), date_to: toISODate(today) }
-    case 'month':  return { date_from: offset(29), date_to: toISODate(today) }
+    case 'month': {
+      const firstOfMonth = new Date(today.getFullYear(), today.getMonth(), 1)
+      return { date_from: toISODate(firstOfMonth), date_to: toISODate(today) }
+    }
     case 'all':    return {}
     case 'pick_month': {
       if (!rangeFrom && !rangeTo) return {}
@@ -76,7 +84,7 @@ export function Feed() {
   const { user, signOut } = useAuth()
   const [articles, setArticles] = useState<Article[]>([])
   const [filters, setFilters] = useState<SidebarFilters>({ category: '', topics: [], sources: [] })
-  const [datePreset, setDatePreset] = useState<DatePreset>('today')
+  const [datePreset, setDatePreset] = useState<DatePreset>('week')
   const [rangeFrom, setRangeFrom] = useState<string | null>(MONTHS[0].value)
   const [rangeTo,   setRangeTo]   = useState<string | null>(MONTHS[0].value)
   const [loading, setLoading] = useState(true)
@@ -85,6 +93,16 @@ export function Feed() {
   const [total, setTotal] = useState(0)
 
   const PER_PAGE = 30
+
+  const [trendingArticles, setTrendingArticles] = useState<TrendingArticle[]>([])
+  const [trendingLoading, setTrendingLoading] = useState(true)
+
+  useEffect(() => {
+    api.getTrending({ hours: 48, limit: 5 })
+      .then((res) => setTrendingArticles(res.articles))
+      .catch(() => {})
+      .finally(() => setTrendingLoading(false))
+  }, [])
 
   useEffect(() => {
     setPage(1)
@@ -238,6 +256,9 @@ export function Feed() {
           </select>
         </div>
       </div>
+
+      {/* Trending strip */}
+      <TrendingStrip articles={trendingArticles} loading={trendingLoading} />
 
       {/* Two-column layout */}
       <div className="flex gap-8">

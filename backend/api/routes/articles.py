@@ -1,10 +1,10 @@
 """Article routes: list and detail."""
-from datetime import date
+from datetime import date, datetime, timezone, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc, and_
+from sqlalchemy import select, desc, and_, func, cast, Float, Date as SADate
 
 from backend.db import get_db
 from backend.db.models import Article
@@ -29,10 +29,11 @@ async def list_articles(
     if digest_date:
         stmt = stmt.where(Article.digest_date == digest_date)
     else:
+        pub_date = func.coalesce(cast(Article.published_at, SADate), Article.digest_date)
         if date_from:
-            stmt = stmt.where(Article.digest_date >= date_from)
+            stmt = stmt.where(pub_date >= date_from)
         if date_to:
-            stmt = stmt.where(Article.digest_date <= date_to)
+            stmt = stmt.where(pub_date <= date_to)
     if category:
         stmt = stmt.where(Article.category == category)
     if tags:
@@ -55,6 +56,46 @@ async def list_articles(
         "per_page": per_page,
         "articles": [a.to_dict() for a in articles],
     }
+
+
+@router.get("/trending")
+async def get_trending_articles(
+    hours: int = Query(48, ge=1, le=168, description="Time window in hours (max 7 days)"),
+    limit: int = Query(5, ge=1, le=10, description="Max articles to return"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return top articles ranked by HN-style time-decayed engagement signal."""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+    ref_time = func.coalesce(Article.published_at, Article.ingested_at)
+    age_hours = cast(func.extract('epoch', func.now() - ref_time), Float) / 3600.0
+    trending_score = (
+        func.greatest(cast(Article.engagement_signal, Float), 1.0)
+        / func.pow(age_hours + 2.0, 1.5)
+    ).label('trending_score')
+
+    stmt = (
+        select(Article, trending_score)
+        .where(
+            and_(
+                func.coalesce(Article.published_at, Article.ingested_at) >= cutoff,
+                Article.is_enriched >= 0,
+            )
+        )
+        .order_by(desc(trending_score))
+        .limit(limit)
+    )
+
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    articles = []
+    for article, score in rows:
+        d = article.to_dict()
+        d['trending_score'] = round(float(score), 4)
+        articles.append(d)
+
+    return {"hours": hours, "limit": limit, "articles": articles}
 
 
 @router.get("/{article_id}")
