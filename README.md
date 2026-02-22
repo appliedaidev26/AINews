@@ -1,6 +1,6 @@
 # AI News
 
-A curated AI/ML news aggregator for engineering leaders, ML engineers, and data scientists.
+A curated AI/ML news aggregator tailored towards engineering leaders, ML engineers, and data scientists.
 
 ## Quick Start (Local Dev)
 
