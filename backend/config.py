@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]
+    cors_extra_origins: str = ""  # comma-separated extra origins, e.g. "https://app.web.app"
 
     # Env
     environment: str = "development"

@@ -1,6 +1,8 @@
 import { auth } from './firebase'
 
-const BASE = '/api'
+// In dev, Vite proxies /api → localhost:8000 (strips /api prefix)
+// In prod, VITE_API_URL points directly to Cloud Run (no /api prefix)
+const BASE = import.meta.env.VITE_API_URL ?? '/api'
 
 export interface Article {
   id: number
