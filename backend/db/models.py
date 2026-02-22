@@ -29,6 +29,7 @@ class Article(Base):
     summary_bullets = Column(JSONB)           # list of strings
     annotations = Column(JSONB)              # list of verbatim quotes
     why_it_matters = Column(Text)
+    practical_takeaway = Column(Text)        # single actionable sentence
     category = Column(String(100), index=True)
     tags = Column(ARRAY(Text))
     audience_scores = Column(JSONB)          # {role: float}
@@ -59,6 +60,7 @@ class Article(Base):
             "summary_bullets": self.summary_bullets or [],
             "annotations": self.annotations or [],
             "why_it_matters": self.why_it_matters,
+            "practical_takeaway": self.practical_takeaway,
             "category": self.category,
             "tags": self.tags or [],
             "audience_scores": self.audience_scores or {},

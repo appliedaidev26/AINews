@@ -5,6 +5,39 @@ interface Props {
   article: ArticleDetailType
 }
 
+const ROLE_LABELS: Record<string, string> = {
+  ml_engineer:        'ML Engineer',
+  engineering_leader: 'Eng Leader',
+  data_scientist:     'Data Scientist',
+  software_engineer:  'Software Eng',
+  researcher:         'Researcher',
+}
+
+const ROLE_ORDER = ['ml_engineer', 'engineering_leader', 'data_scientist', 'software_engineer', 'researcher']
+
+function AudienceBars({ scores }: { scores: Record<string, number> }) {
+  const sorted = ROLE_ORDER.filter(r => scores[r] != null)
+    .map(r => ({ role: r, score: scores[r] }))
+    .sort((a, b) => b.score - a.score)
+
+  return (
+    <div className="space-y-1.5">
+      {sorted.map(({ role, score }) => (
+        <div key={role} className="flex items-center gap-2">
+          <span className="text-xs text-gray-500 w-28 flex-shrink-0">{ROLE_LABELS[role] ?? role}</span>
+          <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+            <div
+              className="h-full rounded-full bg-indigo-400"
+              style={{ width: `${Math.round(score * 100)}%` }}
+            />
+          </div>
+          <span className="text-xs text-gray-400 w-7 text-right">{Math.round(score * 100)}%</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function formatDate(iso: string | null): string {
   if (!iso) return ''
   return new Date(iso).toLocaleDateString('en-US', {
@@ -79,6 +112,16 @@ export function ArticleDetail({ article }: Props) {
         </section>
       )}
 
+      {/* Practical Takeaway */}
+      {article.practical_takeaway && (
+        <section className="mb-5">
+          <p className="section-heading">Practical Takeaway</p>
+          <p className="text-sm text-gray-700 leading-relaxed border-l-2 border-indigo-300 pl-3">
+            {article.practical_takeaway}
+          </p>
+        </section>
+      )}
+
       {/* Notable Quotes */}
       {article.annotations?.length > 0 && (
         <section className="mb-5">
@@ -103,6 +146,14 @@ export function ArticleDetail({ article }: Props) {
             <span key={tag} className="tag-pill">{tag}</span>
           ))}
         </div>
+      )}
+
+      {/* Audience Relevance */}
+      {article.audience_scores && Object.keys(article.audience_scores).length > 0 && (
+        <section className="mb-5">
+          <p className="section-heading">Relevance by Role</p>
+          <AudienceBars scores={article.audience_scores} />
+        </section>
       )}
 
       {/* Related Articles */}

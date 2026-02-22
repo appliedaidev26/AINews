@@ -35,6 +35,7 @@ Return ONLY valid JSON (no markdown, no explanation):
     "Second notable quote (omit if no strong quotes available)"
   ],
   "why_it_matters": "1-2 sentences explaining significance for ML engineers and engineering leaders",
+  "practical_takeaway": "One sentence starting with an action verb: what should a reader DO or WATCH as a result of this?",
   "category": "Research | Tools & Libraries | Industry News | Policy & Ethics | Tutorials",
   "tags": ["tag1", "tag2", "tag3"],
   "audience_scores": {{
@@ -51,6 +52,7 @@ Rules:
 - annotations: 1-3 verbatim or near-verbatim quotes; empty list if none available
 - category: pick exactly one of the 5 options
 - tags: 3-7 specific, lowercase tags (e.g. "llms", "fine-tuning", "rag", "computer-vision", "open-source")
+- practical_takeaway: one concrete action sentence, 10-20 words, starts with a verb (e.g. "Try", "Evaluate", "Monitor", "Read", "Consider")
 - audience_scores: all 5 roles, values 0.0-1.0 reflecting how relevant this is to each role
 """
 
@@ -223,6 +225,7 @@ def _enrich_one(article: Article, session: Session, use_openai: bool = False) ->
     article.summary_bullets = result.get("summary_bullets", [])
     article.annotations = result.get("annotations", [])
     article.why_it_matters = result.get("why_it_matters", "")
+    article.practical_takeaway = result.get("practical_takeaway", "")
     article.category = result.get("category", "Industry News")
     tags = result.get("tags", [])
     article.tags = [t.lower().strip() for t in tags if isinstance(t, str)]

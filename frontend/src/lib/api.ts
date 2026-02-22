@@ -16,6 +16,7 @@ export interface Article {
   summary_bullets: string[]
   annotations: string[]
   why_it_matters: string | null
+  practical_takeaway: string | null
   category: string | null
   tags: string[]
   audience_scores: Record<string, number>

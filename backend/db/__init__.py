@@ -25,3 +25,8 @@ async def create_tables():
                 "ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS progress JSONB"
             )
         )
+        await conn.execute(
+            __import__("sqlalchemy").text(
+                "ALTER TABLE articles ADD COLUMN IF NOT EXISTS practical_takeaway TEXT"
+            )
+        )
