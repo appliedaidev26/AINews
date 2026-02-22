@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.config import settings
 from backend.db import create_tables
-from backend.api.routes import articles, digest, profile
+from backend.api.routes import articles, digest, profile, admin
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -68,6 +68,7 @@ app.add_middleware(
 app.include_router(articles.router)
 app.include_router(digest.router)
 app.include_router(profile.router)
+app.include_router(admin.router)
 
 
 @app.get("/health")

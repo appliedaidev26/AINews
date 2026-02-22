@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]
     cors_extra_origins: str = ""  # comma-separated extra origins, e.g. "https://app.web.app"
 
+    # Admin
+    admin_api_key: str = ""  # set ADMIN_API_KEY env var; empty = endpoint disabled
+
     # Env
     environment: str = "development"
 

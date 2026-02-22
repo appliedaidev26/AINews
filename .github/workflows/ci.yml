@@ -102,6 +102,7 @@ jobs:
             GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
             FIREBASE_PROJECT_ID=${{ vars.GCP_PROJECT_ID }}
             CORS_EXTRA_ORIGINS=${{ vars.CORS_EXTRA_ORIGINS }}
+            ADMIN_API_KEY=${{ secrets.ADMIN_API_KEY }}
             ENVIRONMENT=production
 
       # ── Build frontend ─────────────────────────────────────────
