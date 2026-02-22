@@ -61,6 +61,8 @@ async def get_personalized_feed(
     category: Optional[str] = Query(None),
     tags: Optional[str] = Query(None, description="Comma-separated tags to filter by (any match)"),
     source_type: Optional[str] = Query(None, description="Comma-separated source types: hn,reddit,arxiv,rss"),
+    date_from: Optional[date] = Query(None, description="Range start date (inclusive); defaults to 7 days ago"),
+    date_to: Optional[date] = Query(None, description="Range end date (inclusive); defaults to today"),
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
@@ -74,7 +76,8 @@ async def get_personalized_feed(
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found — complete onboarding first")
 
-    cutoff = date.today() - timedelta(days=7)
+    effective_from = date_from or (date.today() - timedelta(days=7))
+    effective_to = date_to or date.today()
 
     # Build query joining articles with user scores
     stmt = (
@@ -86,7 +89,11 @@ async def get_personalized_feed(
                 UserArticleScore.user_id == profile.id,
             ),
         )
-        .where(Article.digest_date >= cutoff, Article.is_enriched >= 0)
+        .where(
+            Article.digest_date >= effective_from,
+            Article.digest_date <= effective_to,
+            Article.is_enriched >= 0,
+        )
     )
 
     if category:

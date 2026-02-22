@@ -14,7 +14,9 @@ router = APIRouter(prefix="/articles", tags=["articles"])
 
 @router.get("")
 async def list_articles(
-    digest_date: Optional[date] = Query(None, description="Filter by date (YYYY-MM-DD)"),
+    digest_date: Optional[date] = Query(None, description="Filter by exact date (YYYY-MM-DD)"),
+    date_from: Optional[date] = Query(None, description="Range start date (inclusive)"),
+    date_to: Optional[date] = Query(None, description="Range end date (inclusive)"),
     category: Optional[str] = Query(None),
     tags: Optional[str] = Query(None, description="Comma-separated tags to filter by (any match)"),
     source_type: Optional[str] = Query(None, description="Comma-separated source types: hn,reddit,arxiv,rss"),
@@ -26,6 +28,11 @@ async def list_articles(
 
     if digest_date:
         stmt = stmt.where(Article.digest_date == digest_date)
+    else:
+        if date_from:
+            stmt = stmt.where(Article.digest_date >= date_from)
+        if date_to:
+            stmt = stmt.where(Article.digest_date <= date_to)
     if category:
         stmt = stmt.where(Article.category == category)
     if tags:

@@ -14,11 +14,45 @@ const ROLE_LABELS: Record<string, string> = {
   researcher: 'Researcher',
 }
 
+type DatePreset = 'today' | 'yesterday' | 'week' | 'month' | 'all'
+
+const DATE_PRESETS: { value: DatePreset; label: string }[] = [
+  { value: 'today',     label: 'Today' },
+  { value: 'yesterday', label: 'Yesterday' },
+  { value: 'week',      label: 'This Week' },
+  { value: 'month',     label: 'This Month' },
+  { value: 'all',       label: 'All' },
+]
+
+function toISODate(d: Date): string {
+  return d.toISOString().slice(0, 10)
+}
+
+function dateRangeForPreset(preset: DatePreset): { date_from?: string; date_to?: string } {
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+
+  const offset = (days: number) => {
+    const d = new Date(today)
+    d.setDate(d.getDate() - days)
+    return toISODate(d)
+  }
+
+  switch (preset) {
+    case 'today':     return { date_from: toISODate(today), date_to: toISODate(today) }
+    case 'yesterday': return { date_from: offset(1), date_to: offset(1) }
+    case 'week':      return { date_from: offset(6), date_to: toISODate(today) }
+    case 'month':     return { date_from: offset(29), date_to: toISODate(today) }
+    case 'all':       return {}
+  }
+}
+
 export function Feed() {
   const { profile } = useUserProfile()
   const { user, signOut } = useAuth()
   const [articles, setArticles] = useState<Article[]>([])
   const [filters, setFilters] = useState<SidebarFilters>({ category: '', topics: [], sources: [] })
+  const [datePreset, setDatePreset] = useState<DatePreset>('today')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [page, setPage] = useState(1)
@@ -28,7 +62,7 @@ export function Feed() {
 
   useEffect(() => {
     setPage(1)
-  }, [filters, profile])
+  }, [filters, datePreset, profile])
 
 
 
@@ -41,12 +75,14 @@ export function Feed() {
       try {
         const tagsParam = filters.topics.length > 0 ? filters.topics.join(',') : undefined
         const sourceParam = filters.sources.length > 0 ? filters.sources.join(',') : undefined
+        const dateRange = dateRangeForPreset(datePreset)
 
         if (profile) {
           const res = await api.getPersonalizedFeed({
             category: filters.category || undefined,
             tags: tagsParam,
             source_type: sourceParam,
+            ...dateRange,
             page,
           })
           if (!cancelled) {
@@ -58,6 +94,7 @@ export function Feed() {
             category: filters.category || undefined,
             tags: tagsParam,
             source_type: sourceParam,
+            ...dateRange,
             page,
             per_page: PER_PAGE,
           })
@@ -75,7 +112,7 @@ export function Feed() {
 
     fetchFeed()
     return () => { cancelled = true }
-  }, [profile, filters, page])
+  }, [profile, filters, datePreset, page])
 
   const totalPages = Math.ceil(total / PER_PAGE)
 
@@ -113,6 +150,23 @@ export function Feed() {
             </div>
           )}
         </div>
+      </div>
+
+      {/* Date filter pills */}
+      <div className="flex items-center gap-1.5 mb-5">
+        {DATE_PRESETS.map(({ value, label }) => (
+          <button
+            key={value}
+            onClick={() => { setDatePreset(value); setPage(1) }}
+            className={`px-3 py-1 text-xs rounded-full border transition-colors ${
+              datePreset === value
+                ? 'bg-indigo-600 text-white border-indigo-600'
+                : 'border-gray-200 text-gray-500 hover:border-gray-400 hover:text-gray-700'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
       </div>
 
       {/* Two-column layout */}
