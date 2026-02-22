@@ -100,6 +100,7 @@ jobs:
             DATABASE_URL=${{ secrets.DATABASE_URL }}
             DATABASE_URL_SYNC=${{ secrets.DATABASE_URL_SYNC }}
             GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+            FIREBASE_PROJECT_ID=${{ vars.GCP_PROJECT_ID }}
             ENVIRONMENT=production
 
       # ── Build frontend ─────────────────────────────────────────
