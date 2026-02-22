@@ -1,0 +1,115 @@
+name: CI / CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+
+  test-backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: ainews
+          POSTGRES_PASSWORD: ainews
+          POSTGRES_DB: ainews_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install -r backend/requirements.txt
+      - name: Run tests
+        run: pytest backend/tests/ -v
+        env:
+          DATABASE_URL: postgresql+asyncpg://ainews:ainews@localhost:5432/ainews_test
+          DATABASE_URL_SYNC: postgresql://ainews:ainews@localhost:5432/ainews_test
+          GEMINI_API_KEY: test_key
+          ENVIRONMENT: test
+
+  test-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install & build (type-check + bundle)
+        working-directory: frontend
+        run: npm ci && npm run build
+        env:
+          VITE_FIREBASE_API_KEY: placeholder
+          VITE_FIREBASE_AUTH_DOMAIN: placeholder.firebaseapp.com
+          VITE_FIREBASE_PROJECT_ID: placeholder
+
+  deploy:
+    needs: [test-backend, test-frontend]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # for Workload Identity Federation (optional)
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── GCP Auth ──────────────────────────────────────────────
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      # ── Build & push API image ─────────────────────────────────
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Build API image
+        run: |
+          docker build \
+            -t ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/ainews/api:${{ github.sha }} \
+            -f Dockerfile.api .
+
+      - name: Push API image
+        run: |
+          docker push \
+            ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/ainews/api:${{ github.sha }}
+
+      # ── Deploy API to Cloud Run ────────────────────────────────
+      - uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ainews-api
+          region: ${{ vars.GCP_REGION }}
+          image: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/ainews/api:${{ github.sha }}
+
+      # ── Build frontend ─────────────────────────────────────────
+      - name: Build frontend
+        working-directory: frontend
+        run: npm ci && npm run build
+        env:
+          VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY }}
+          VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
+          VITE_FIREBASE_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          VITE_API_URL: ${{ secrets.VITE_API_URL }}
+
+      # ── Deploy frontend to Firebase Hosting ───────────────────
+      - uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SA_KEY }}
+          projectId: ${{ vars.GCP_PROJECT_ID }}
+          channelId: live

@@ -1,0 +1,35 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+@layer base {
+  body {
+    @apply bg-white text-gray-900 antialiased text-sm;
+  }
+}
+
+@layer components {
+  .category-badge {
+    @apply inline-block px-1.5 py-0.5 text-xs font-medium border border-gray-300 text-gray-500 rounded-sm leading-none whitespace-nowrap;
+  }
+
+  .tag-pill {
+    @apply inline-block px-1.5 py-0.5 text-xs border border-gray-200 text-gray-500 rounded;
+  }
+
+  .category-badge-research  { @apply category-badge bg-purple-50 text-purple-700 border-purple-200; }
+  .category-badge-tools     { @apply category-badge bg-green-50  text-green-700  border-green-200; }
+  .category-badge-industry  { @apply category-badge bg-blue-50   text-blue-700   border-blue-200; }
+  .category-badge-policy    { @apply category-badge bg-amber-50  text-amber-700  border-amber-200; }
+  .category-badge-tutorials { @apply category-badge bg-teal-50   text-teal-700   border-teal-200; }
+
+  .section-heading {
+    @apply text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2;
+  }
+
+  .divider {
+    @apply border-t border-gray-200 my-4;
+  }
+}
