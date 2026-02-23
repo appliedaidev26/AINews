@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { api, type Article, type TrendingArticle } from '../lib/api'
+import { api, type Article } from '../lib/api'
 import { ArticleCard } from '../components/ArticleCard'
 import { Sidebar, type SidebarFilters } from '../components/Sidebar'
 import { TrendingStrip } from '../components/TrendingStrip'
@@ -94,16 +94,7 @@ export function Feed() {
 
   const PER_PAGE = 30
 
-  const [trendingArticles, setTrendingArticles] = useState<TrendingArticle[]>([])
-  const [trendingLoading, setTrendingLoading] = useState(true)
   const [feedNames, setFeedNames] = useState<string[]>([])
-
-  useEffect(() => {
-    api.getTrending({ hours: 48, limit: 5 })
-      .then((res) => setTrendingArticles(res.articles))
-      .catch(() => {})
-      .finally(() => setTrendingLoading(false))
-  }, [])
 
   useEffect(() => {
     api.getFeedNames()
@@ -268,7 +259,7 @@ export function Feed() {
       </div>
 
       {/* Trending strip */}
-      <TrendingStrip articles={trendingArticles} loading={trendingLoading} />
+      <TrendingStrip />
 
       {/* Two-column layout */}
       <div className="flex gap-8">
