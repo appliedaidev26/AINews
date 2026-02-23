@@ -89,6 +89,8 @@ async def _run_one_date(
     running_totals: dict,
     effective_from: date,
     effective_to: date,
+    enabled_sources: set[str],
+    rss_feed_ids: Optional[set[int]],
 ) -> dict:
     """Run the full pipeline for a single date. Returns per-date counts."""
     logger.info(f"Processing date {date_idx + 1}/{dates_total}: {target_date}")
@@ -103,14 +105,14 @@ async def _run_one_date(
         "dates_total": dates_total,
         **running_totals,
     })
-    hn_articles, reddit_articles, arxiv_articles, rss_articles = await asyncio.gather(
-        fetch_hackernews(target_date),
-        asyncio.to_thread(fetch_reddit, target_date),
-        asyncio.to_thread(fetch_arxiv, target_date),
-        asyncio.to_thread(fetch_rss, target_date),
-    )
+    fetch_coros = []
+    if "hn"     in enabled_sources: fetch_coros.append(fetch_hackernews(target_date))
+    if "reddit" in enabled_sources: fetch_coros.append(asyncio.to_thread(fetch_reddit, target_date))
+    if "arxiv"  in enabled_sources: fetch_coros.append(asyncio.to_thread(fetch_arxiv, target_date))
+    if "rss"    in enabled_sources: fetch_coros.append(asyncio.to_thread(fetch_rss, target_date, rss_feed_ids))
 
-    raw_articles = hn_articles + reddit_articles + arxiv_articles + rss_articles
+    results = await asyncio.gather(*fetch_coros)
+    raw_articles = [art for sublist in results for art in sublist]
     logger.info(f"[{target_date}] Fetched {len(raw_articles)} total raw articles")
 
     # --- Step 2: Filter already-ingested ---
@@ -209,10 +211,14 @@ async def run_pipeline(
     # Legacy single-date param — kept for backward compat
     target_date: Optional[date] = None,
     run_id: Optional[int] = None,
+    enabled_sources: Optional[set[str]] = None,
+    rss_feed_ids: Optional[set[int]] = None,
 ) -> dict:
     # Resolve effective range
     effective_from = date_from or target_date or date.today()
     effective_to   = date_to or effective_from
+    if enabled_sources is None:
+        enabled_sources = {"hn", "reddit", "arxiv", "rss"}
 
     all_dates = [
         effective_from + timedelta(days=i)
@@ -235,7 +241,7 @@ async def run_pipeline(
                 "dates_total": len(all_dates),
                 **totals,
             })
-            day_result = await _run_one_date(d, run_id, idx, len(all_dates), dict(totals), effective_from, effective_to)
+            day_result = await _run_one_date(d, run_id, idx, len(all_dates), dict(totals), effective_from, effective_to, enabled_sources, rss_feed_ids)
             for k in totals:
                 totals[k] += day_result.get(k, 0)
 

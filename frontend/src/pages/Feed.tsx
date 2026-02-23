@@ -84,7 +84,7 @@ export function Feed() {
   const { user, signOut } = useAuth()
   const [articles, setArticles] = useState<Article[]>([])
   const [filters, setFilters] = useState<SidebarFilters>({ category: '', topics: [], sources: [], blogs: [] })
-  const [datePreset, setDatePreset] = useState<DatePreset>('week')
+  const [datePreset, setDatePreset] = useState<DatePreset>('all')
   const [rangeFrom, setRangeFrom] = useState<string | null>(MONTHS[0].value)
   const [rangeTo,   setRangeTo]   = useState<string | null>(MONTHS[0].value)
   const [loading, setLoading] = useState(true)
@@ -96,12 +96,19 @@ export function Feed() {
 
   const [trendingArticles, setTrendingArticles] = useState<TrendingArticle[]>([])
   const [trendingLoading, setTrendingLoading] = useState(true)
+  const [feedNames, setFeedNames] = useState<string[]>([])
 
   useEffect(() => {
     api.getTrending({ hours: 48, limit: 5 })
       .then((res) => setTrendingArticles(res.articles))
       .catch(() => {})
       .finally(() => setTrendingLoading(false))
+  }, [])
+
+  useEffect(() => {
+    api.getFeedNames()
+      .then((res) => setFeedNames(res.feed_names))
+      .catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -266,7 +273,7 @@ export function Feed() {
       {/* Two-column layout */}
       <div className="flex gap-8">
         {/* Left sidebar */}
-        <Sidebar filters={filters} onChange={(f) => { setFilters(f); setPage(1) }} />
+        <Sidebar filters={filters} onChange={(f) => { setFilters(f); setPage(1) }} feedNames={feedNames} />
 
         {/* Right: article feed */}
         <div className="flex-1 min-w-0">

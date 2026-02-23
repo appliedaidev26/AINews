@@ -35,11 +35,21 @@ async def trigger_ingest(
     date_to:      Optional[date] = Query(None, description="Range end (ISO date, e.g. 2026-01-31)"),
     target_date:  Optional[date] = Query(None, description="Legacy single-date param — kept for compat"),
     triggered_by: str            = Query("api"),
+    sources:      str            = Query("hn,reddit,arxiv,rss", description="Comma-separated source types to include"),
+    rss_feed_ids: str            = Query("", description="Comma-separated RSS feed IDs; empty means all active feeds"),
     key: str = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     effective_from = date_from or target_date or date.today()
     effective_to   = date_to or effective_from
+
+    enabled_sources = {s.strip().lower() for s in sources.split(",") if s.strip()}
+    if not enabled_sources:
+        enabled_sources = {"hn", "reddit", "arxiv", "rss"}
+
+    parsed_feed_ids: Optional[set[int]] = None
+    if rss_feed_ids.strip():
+        parsed_feed_ids = {int(i) for i in rss_feed_ids.split(",") if i.strip().isdigit()}
 
     run = PipelineRun(
         started_at=datetime.now(timezone.utc),
@@ -53,7 +63,8 @@ async def trigger_ingest(
     await db.refresh(run)
 
     task = asyncio.create_task(
-        run_pipeline(date_from=effective_from, date_to=effective_to, run_id=run.id)
+        run_pipeline(date_from=effective_from, date_to=effective_to, run_id=run.id,
+                     enabled_sources=enabled_sources, rss_feed_ids=parsed_feed_ids)
     )
     _active_tasks[run.id] = task
     task.add_done_callback(lambda _: _active_tasks.pop(run.id, None))
@@ -63,6 +74,7 @@ async def trigger_ingest(
         "date_from": str(effective_from),
         "date_to":   str(effective_to),
         "run_id":    run.id,
+        "sources":   sorted(enabled_sources),
     }
 
 
@@ -186,6 +198,7 @@ async def get_sources(
             "reddit": {
                 "subreddits": SUBREDDITS,
                 "min_upvotes": MIN_UPVOTES,
+                "configured": bool(settings.reddit_client_id and settings.reddit_client_secret),
             },
             "arxiv": {
                 "categories": ARXIV_CATEGORIES,

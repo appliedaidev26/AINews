@@ -111,6 +111,9 @@ export const api = {
   getTrending: (params?: { hours?: number; limit?: number }) =>
     get<TrendingResponse>('/articles/trending', params as Record<string, string | number>),
 
+  getFeedNames: () =>
+    get<{ feed_names: string[] }>('/articles/source-names'),
+
   getDigestToday: (category?: string) =>
     get<DigestResponse>('/digest/today', category ? { category } : undefined),
 
@@ -175,7 +178,7 @@ export interface SourcesResponse {
   rss_feeds: RssFeed[]
   readonly: {
     hackernews: { min_score: number; keyword_count: number }
-    reddit: { subreddits: string[]; min_upvotes: number }
+    reddit: { subreddits: string[]; min_upvotes: number; configured: boolean }
     arxiv: { categories: string[]; keyword_count: number }
   }
 }
@@ -211,14 +214,19 @@ export const adminApi = {
     adminFetch<PipelineRun>('GET', `/admin/runs/${runId}`, key),
   triggerIngest: (key: string, opts: {
     triggeredBy?: string;
-    dateFrom?: string;   // YYYY-MM-DD
-    dateTo?: string;     // YYYY-MM-DD
+    dateFrom?: string;       // YYYY-MM-DD
+    dateTo?: string;         // YYYY-MM-DD
+    sources?: string;        // comma-separated: "hn,reddit,arxiv,rss"
+    rssFeedIds?: string;     // comma-separated feed IDs; omit for all active feeds
   } = {}) =>
-    adminFetch<{ status: string; date_from: string; date_to: string; run_id: number }>(
+    adminFetch<{ status: string; date_from: string; date_to: string; run_id: number; sources: string[] }>(
       'POST', '/admin/ingest', key, {
         triggered_by: opts.triggeredBy ?? 'api',
-        ...(opts.dateFrom ? { date_from: opts.dateFrom } : {}),
-        ...(opts.dateTo   ? { date_to:   opts.dateTo   } : {}),
+        ...(opts.dateFrom   ? { date_from:    opts.dateFrom   } : {}),
+        ...(opts.dateTo     ? { date_to:      opts.dateTo     } : {}),
+        // Always send sources so the backend never falls back to its "all 4" default
+        sources: opts.sources || 'hn,reddit,arxiv,rss',
+        ...(opts.rssFeedIds ? { rss_feed_ids: opts.rssFeedIds } : {}),
       }
     ),
   cancelRun: (key: string, runId: number) =>

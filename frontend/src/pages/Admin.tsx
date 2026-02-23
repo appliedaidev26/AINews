@@ -3,6 +3,12 @@ import { Link } from 'react-router-dom'
 import { adminApi, type PipelineRun, type PipelineStage, type CoverageDay, type RssFeed, type SourcesResponse } from '../lib/api'
 
 const STORAGE_KEY = 'ainews_admin_key'
+
+const ALL_SOURCES = ['hn', 'reddit', 'arxiv'] as const
+type SourceKey = typeof ALL_SOURCES[number]
+const SOURCE_LABELS: Record<SourceKey, string> = {
+  hn: 'Hacker News', reddit: 'Reddit', arxiv: 'Arxiv',
+}
 const POLL_RUNS_MS     = 15_000   // refresh full list every 15s
 const POLL_RUN_MS      = 3_000    // poll active run every 3s for progress
 const POLL_COVERAGE_MS = 60_000   // refresh coverage every 60s
@@ -253,10 +259,66 @@ function SourcesPanel({ adminKey }: { adminKey: string }) {
         <p className="text-sm text-gray-400">Loading…</p>
       ) : (
         <>
-          {/* RSS Feeds — editable */}
-          <div className="space-y-2">
+          {/* Top row: HN, Reddit, Arxiv cards */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {/* Hacker News */}
+            <div className="border border-gray-200 rounded p-3">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-xs font-medium text-gray-700">Hacker News</p>
+                <span className="text-xs px-1.5 py-0.5 rounded bg-green-50 text-green-700 border border-green-200">configured</span>
+              </div>
+              <p className="text-xs text-gray-500">Min score: <span className="font-medium text-gray-700">{ro?.hackernews.min_score ?? '—'}</span></p>
+              <p className="text-xs text-gray-500">Keywords: <span className="font-medium text-gray-700">{ro?.hackernews.keyword_count ?? '—'}</span></p>
+            </div>
+
+            {/* Reddit */}
+            <div className="border border-gray-200 rounded p-3">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-xs font-medium text-gray-700">Reddit</p>
+                {ro && (
+                  ro.reddit.configured
+                    ? <span className="text-xs px-1.5 py-0.5 rounded bg-green-50 text-green-700 border border-green-200">configured</span>
+                    : <span className="text-xs px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">⚠ No API credentials</span>
+                )}
+              </div>
+              {ro && (
+                <>
+                  <div className="flex flex-wrap gap-1 mb-1">
+                    {ro.reddit.subreddits.map(s => (
+                      <span key={s} className="category-badge bg-gray-50 text-gray-600 border-gray-200">r/{s}</span>
+                    ))}
+                  </div>
+                  <p className="text-xs text-gray-500">Min upvotes: <span className="font-medium text-gray-700">{ro.reddit.min_upvotes}</span></p>
+                </>
+              )}
+            </div>
+
+            {/* Arxiv */}
+            <div className="border border-gray-200 rounded p-3">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-xs font-medium text-gray-700">Arxiv</p>
+                <span className="text-xs px-1.5 py-0.5 rounded bg-green-50 text-green-700 border border-green-200">configured</span>
+              </div>
+              {ro && (
+                <>
+                  <div className="flex flex-wrap gap-1 mb-1">
+                    {ro.arxiv.categories.map(c => (
+                      <span key={c} className="category-badge bg-gray-50 text-gray-600 border-gray-200">{c}</span>
+                    ))}
+                  </div>
+                  <p className="text-xs text-gray-500">Keywords: <span className="font-medium text-gray-700">{ro.arxiv.keyword_count}</span></p>
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* Blogs / RSS card — full width, contains the editable feeds table */}
+          <div className="border border-gray-200 rounded p-3 space-y-3">
             <div className="flex items-center justify-between">
-              <p className="text-xs font-medium text-gray-600">RSS Feeds</p>
+              <div className="flex items-center gap-2">
+                <p className="text-xs font-medium text-gray-700">Blogs / RSS</p>
+                <span className="text-xs px-1.5 py-0.5 rounded bg-green-50 text-green-700 border border-green-200">configured</span>
+              </div>
               <button
                 onClick={() => { setShowAddForm(!showAddForm); setAddError('') }}
                 className="text-xs text-indigo-600 hover:underline"
@@ -266,7 +328,7 @@ function SourcesPanel({ adminKey }: { adminKey: string }) {
             </div>
 
             {showAddForm && (
-              <form onSubmit={handleAdd} className="border border-gray-200 rounded p-3 space-y-2">
+              <form onSubmit={handleAdd} className="space-y-2">
                 <div className="flex gap-2">
                   <input
                     type="text"
@@ -294,8 +356,8 @@ function SourcesPanel({ adminKey }: { adminKey: string }) {
               </form>
             )}
 
-            {sources && sources.rss_feeds.length > 0 && (
-              <div className="border border-gray-200 rounded overflow-x-auto">
+            {sources && sources.rss_feeds.length > 0 ? (
+              <div className="border border-gray-100 rounded overflow-x-auto">
                 <table className="w-full text-xs text-gray-700">
                   <thead className="bg-gray-50 border-b border-gray-200">
                     <tr>
@@ -335,37 +397,10 @@ function SourcesPanel({ adminKey }: { adminKey: string }) {
                   </tbody>
                 </table>
               </div>
+            ) : (
+              <p className="text-xs text-gray-400">No feeds configured. Add one above.</p>
             )}
           </div>
-
-          {/* Read-only source cards */}
-          {ro && (
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              <div className="border border-gray-200 rounded p-3">
-                <p className="text-xs font-medium text-gray-600 mb-2">HackerNews</p>
-                <p className="text-xs text-gray-500">Min score: <span className="font-medium text-gray-700">{ro.hackernews.min_score}</span></p>
-                <p className="text-xs text-gray-500">Keywords: <span className="font-medium text-gray-700">{ro.hackernews.keyword_count}</span></p>
-              </div>
-              <div className="border border-gray-200 rounded p-3">
-                <p className="text-xs font-medium text-gray-600 mb-2">Reddit</p>
-                <div className="flex flex-wrap gap-1 mb-1">
-                  {ro.reddit.subreddits.map(s => (
-                    <span key={s} className="category-badge bg-gray-50 text-gray-600 border-gray-200">r/{s}</span>
-                  ))}
-                </div>
-                <p className="text-xs text-gray-500">Min upvotes: <span className="font-medium text-gray-700">{ro.reddit.min_upvotes}</span></p>
-              </div>
-              <div className="border border-gray-200 rounded p-3">
-                <p className="text-xs font-medium text-gray-600 mb-2">Arxiv</p>
-                <div className="flex flex-wrap gap-1 mb-1">
-                  {ro.arxiv.categories.map(c => (
-                    <span key={c} className="category-badge bg-gray-50 text-gray-600 border-gray-200">{c}</span>
-                  ))}
-                </div>
-                <p className="text-xs text-gray-500">Keywords: <span className="font-medium text-gray-700">{ro.arxiv.keyword_count}</span></p>
-              </div>
-            </div>
-          )}
         </>
       )}
     </section>
@@ -444,6 +479,13 @@ export function Admin() {
   // Date-range form state — default both to today
   const [dateFrom, setDateFrom] = useState(isoDate(0))
   const [dateTo,   setDateTo]   = useState(isoDate(0))
+
+  // Source selection state — all enabled by default
+  const [selectedSources, setSelectedSources] = useState<Set<SourceKey>>(new Set(ALL_SOURCES))
+
+  // RSS feed selection — loaded on auth; all selected by default
+  const [feeds, setFeeds] = useState<RssFeed[]>([])
+  const [selectedFeedIds, setSelectedFeedIds] = useState<Set<number>>(new Set())
 
   const runsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const runIntervalRef  = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -544,6 +586,15 @@ export function Admin() {
     })
   }, [])
 
+  // Load RSS feeds for the Run Pipeline form whenever authenticated
+  useEffect(() => {
+    if (!isAuthenticated) return
+    adminApi.getSources(key).then(data => {
+      setFeeds(data.rss_feeds)
+      setSelectedFeedIds(new Set(data.rss_feeds.map(f => f.id)))
+    }).catch(() => {})
+  }, [isAuthenticated, key])
+
   function handleDateFromChange(val: string) {
     setDateFrom(val)
     // Clamp: dateTo must not be before dateFrom
@@ -559,10 +610,21 @@ export function Admin() {
   async function handleTrigger() {
     setTriggering(true)
     try {
+      // Build sources list: checked static sources + 'rss' if any feeds are selected
+      const sourcesList: string[] = ALL_SOURCES.filter(s => selectedSources.has(s))
+      if (selectedFeedIds.size > 0) sourcesList.push('rss')
+
+      // Only send explicit feed IDs if it's a subset; omit (= undefined) to mean "all active feeds"
+      const rssFeedIds = selectedFeedIds.size > 0 && selectedFeedIds.size < feeds.length
+        ? [...selectedFeedIds].join(',')
+        : undefined
+
       await adminApi.triggerIngest(key, {
         triggeredBy: 'api',
         dateFrom,
         dateTo,
+        sources: sourcesList.join(','),
+        rssFeedIds,
       })
       await fetchRuns(key)
     } catch (err) {
@@ -678,9 +740,95 @@ export function Admin() {
                 className="border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:border-indigo-500 disabled:opacity-50"
               />
             </div>
+            <div className="col-span-full">
+              <label className="block text-xs text-gray-500 mb-2">Sources</label>
+              <div className="flex gap-6 flex-wrap">
+                {/* Group 1: News & Community */}
+                <div className="border border-gray-200 rounded p-2.5 flex-shrink-0">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-xs font-medium text-gray-600">News &amp; Community</span>
+                    {!activeRun && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (selectedSources.size === ALL_SOURCES.length) {
+                            setSelectedSources(new Set())
+                          } else {
+                            setSelectedSources(new Set(ALL_SOURCES))
+                          }
+                        }}
+                        className="text-xs text-indigo-500 hover:underline"
+                      >
+                        {selectedSources.size === ALL_SOURCES.length ? 'none' : 'all'}
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    {ALL_SOURCES.map(src => (
+                      <label key={src} className={`flex items-center gap-1.5 text-xs cursor-pointer select-none ${!!activeRun ? 'opacity-50 cursor-not-allowed' : 'text-gray-600'}`}>
+                        <input
+                          type="checkbox"
+                          checked={selectedSources.has(src)}
+                          disabled={!!activeRun}
+                          onChange={() => setSelectedSources(prev => {
+                            const next = new Set(prev)
+                            next.has(src) ? next.delete(src) : next.add(src)
+                            return next
+                          })}
+                          className="accent-indigo-600 w-3 h-3"
+                        />
+                        {SOURCE_LABELS[src]}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Group 2: Blogs / RSS */}
+                {feeds.length > 0 && (
+                  <div className="border border-gray-200 rounded p-2.5 flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-xs font-medium text-gray-600">Blogs / RSS</span>
+                      {!activeRun && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (selectedFeedIds.size === feeds.length) {
+                              setSelectedFeedIds(new Set())
+                            } else {
+                              setSelectedFeedIds(new Set(feeds.map(f => f.id)))
+                            }
+                          }}
+                          className="text-xs text-indigo-500 hover:underline"
+                        >
+                          {selectedFeedIds.size === feeds.length ? 'none' : 'all'}
+                        </button>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+                      {feeds.map(feed => (
+                        <label key={feed.id} className={`flex items-center gap-1.5 text-xs cursor-pointer select-none ${!!activeRun ? 'opacity-50 cursor-not-allowed' : 'text-gray-600'}`}>
+                          <input
+                            type="checkbox"
+                            checked={selectedFeedIds.has(feed.id)}
+                            disabled={!!activeRun}
+                            onChange={() => setSelectedFeedIds(prev => {
+                              const next = new Set(prev)
+                              next.has(feed.id) ? next.delete(feed.id) : next.add(feed.id)
+                              return next
+                            })}
+                            className="accent-indigo-600 w-3 h-3"
+                          />
+                          {feed.name}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
             <button
               onClick={handleTrigger}
-              disabled={!!activeRun || triggering}
+              disabled={!!activeRun || triggering || (selectedSources.size === 0 && selectedFeedIds.size === 0)}
               className="bg-indigo-600 text-white text-sm px-4 py-2 rounded hover:bg-indigo-700 disabled:opacity-50"
             >
               {triggering ? 'Starting…' : 'Run Pipeline'}

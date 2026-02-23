@@ -42,9 +42,11 @@ export interface SidebarFilters {
 interface Props {
   filters: SidebarFilters
   onChange: (filters: SidebarFilters) => void
+  feedNames?: string[]   // dynamic feed names loaded from backend; falls back to BLOGS
 }
 
-export function Sidebar({ filters, onChange }: Props) {
+export function Sidebar({ filters, onChange, feedNames }: Props) {
+  const effectiveBlogs = feedNames && feedNames.length > 0 ? feedNames : BLOGS
   const setCategory = (value: string) =>
     onChange({ ...filters, category: value })
 
@@ -166,7 +168,7 @@ export function Sidebar({ filters, onChange }: Props) {
       <div className="mb-6">
         <div className="section-heading">Blogs</div>
         <ul className="space-y-1.5">
-          {BLOGS.map((blog) => {
+          {effectiveBlogs.map((blog) => {
             const active = filters.blogs.includes(blog)
             return (
               <li key={blog}>

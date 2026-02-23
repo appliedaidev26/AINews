@@ -35,8 +35,8 @@ def _make_hash(url: str) -> str:
     return hashlib.sha256(url.encode()).hexdigest()[:64]
 
 
-def _get_active_feeds() -> list[dict]:
-    """Query active RSS feeds from DB, falling back to defaults on error."""
+def _get_active_feeds(feed_ids: Optional[set[int]] = None) -> list[dict]:
+    """Query active RSS feeds from DB, optionally filtered by IDs, falling back to defaults on error."""
     try:
         from sqlalchemy import select
         from sqlalchemy.orm import Session
@@ -44,17 +44,21 @@ def _get_active_feeds() -> list[dict]:
         from backend.db.models import RssFeed
 
         with Session(sync_engine) as session:
-            rows = session.execute(
-                select(RssFeed).where(RssFeed.is_active == True)
-            ).scalars().all()
+            q = select(RssFeed).where(RssFeed.is_active == True)
+            if feed_ids:
+                q = q.where(RssFeed.id.in_(feed_ids))
+            rows = session.execute(q).scalars().all()
             if rows:
-                return [{"name": r.name, "url": r.url} for r in rows]
+                return [{"id": r.id, "name": r.name, "url": r.url} for r in rows]
     except Exception as e:
         logger.warning(f"Failed to load feeds from DB, using defaults: {e}")
+    # If specific IDs were requested but DB failed, don't fall back to defaults
+    if feed_ids:
+        return []
     return DEFAULT_RSS_FEEDS
 
 
-def fetch_rss(target_date: Optional[date] = None) -> list[dict]:
+def fetch_rss(target_date: Optional[date] = None, feed_ids: Optional[set[int]] = None) -> list[dict]:
     """Fetch articles from RSS feeds published on target_date."""
     target_date = target_date or date.today()
 
@@ -64,7 +68,7 @@ def fetch_rss(target_date: Optional[date] = None) -> list[dict]:
         logger.error("feedparser not installed")
         return []
 
-    feeds = _get_active_feeds()
+    feeds = _get_active_feeds(feed_ids)
     articles = []
     for feed_cfg in feeds:
         try:

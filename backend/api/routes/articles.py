@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, and_, or_, func, cast, Float, Date as SADate
 
 from backend.db import get_db
-from backend.db.models import Article
+from backend.db.models import Article, RssFeed
 
 router = APIRouter(prefix="/articles", tags=["articles"])
 
@@ -105,6 +105,15 @@ async def get_trending_articles(
         articles.append(d)
 
     return {"hours": hours, "limit": limit, "articles": articles}
+
+
+@router.get("/source-names")
+async def get_source_names(db: AsyncSession = Depends(get_db)):
+    """Return names of active RSS feeds for use in the feed filter sidebar."""
+    result = await db.execute(
+        select(RssFeed.name).where(RssFeed.is_active == True).order_by(RssFeed.name)
+    )
+    return {"feed_names": result.scalars().all()}
 
 
 @router.get("/{article_id}")
