@@ -330,11 +330,18 @@ export function Feed() {
                 ))}
               </div>
 
+              {/* Article count */}
+              {total > 0 && (
+                <div className="mt-3 text-xs text-gray-400">
+                  Showing {(page - 1) * PER_PAGE + 1}–{Math.min(page * PER_PAGE, total)} of {total} articles
+                </div>
+              )}
+
               {/* Pagination */}
               {totalPages > 1 && (
-                <div className="flex items-center justify-between mt-6 pt-4 border-t border-gray-100 text-xs text-gray-400">
+                <div className="flex items-center justify-between mt-3 pt-4 border-t border-gray-100 text-xs text-gray-400">
                   <button
-                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    onClick={() => { setPage((p) => Math.max(1, p - 1)); window.scrollTo({ top: 0, behavior: 'smooth' }) }}
                     disabled={page === 1}
                     className="hover:text-gray-700 disabled:opacity-30 transition-colors"
                   >
@@ -342,7 +349,7 @@ export function Feed() {
                   </button>
                   <span>{page} / {totalPages}</span>
                   <button
-                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                    onClick={() => { setPage((p) => Math.min(totalPages, p + 1)); window.scrollTo({ top: 0, behavior: 'smooth' }) }}
                     disabled={page === totalPages}
                     className="hover:text-gray-700 disabled:opacity-30 transition-colors"
                   >

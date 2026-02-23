@@ -8,6 +8,7 @@ export function Article() {
   const [article, setArticle] = useState<ArticleDetailType | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [showSticky, setShowSticky] = useState(false)
 
   useEffect(() => {
     if (!id) return
@@ -22,8 +23,28 @@ export function Article() {
     return () => { cancelled = true }
   }, [id])
 
+  useEffect(() => {
+    const handleScroll = () => setShowSticky(window.scrollY > 120)
+    window.addEventListener('scroll', handleScroll, { passive: true })
+    return () => window.removeEventListener('scroll', handleScroll)
+  }, [])
+
   return (
     <div className="max-w-2xl mx-auto px-4 py-6">
+      {/* Sticky back-nav — appears after scrolling past title */}
+      {showSticky && (
+        <div className="fixed top-0 left-0 right-0 z-50 bg-white border-b border-gray-200">
+          <div className="max-w-2xl mx-auto px-4 py-2 flex items-center gap-3">
+            <Link to="/" className="text-xs text-gray-400 hover:text-gray-700 transition-colors flex-shrink-0">
+              ← back
+            </Link>
+            {article && (
+              <span className="text-xs font-medium text-gray-700 truncate">{article.title}</span>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Back nav */}
       <div className="mb-5 pb-3 border-b border-gray-200">
         <Link to="/" className="text-xs text-gray-400 hover:text-gray-700 transition-colors">

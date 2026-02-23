@@ -116,7 +116,7 @@ export function ArticleDetail({ article }: Props) {
       {article.practical_takeaway && (
         <section className="mb-5">
           <p className="section-heading">Practical Takeaway</p>
-          <p className="text-sm text-gray-700 leading-relaxed border-l-2 border-indigo-300 pl-3">
+          <p className="text-sm text-gray-700 leading-relaxed bg-indigo-50 border-l-2 border-indigo-300 pl-3 pr-3 py-2.5 rounded-r">
             {article.practical_takeaway}
           </p>
         </section>

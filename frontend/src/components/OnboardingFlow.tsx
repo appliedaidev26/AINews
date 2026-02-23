@@ -46,6 +46,7 @@ export function OnboardingFlow({ onComplete, loading = false }: Props) {
 
       {/* Role */}
       <section className="mb-7">
+        <div className="text-xs text-gray-400 mb-1">Step 1 of 3</div>
         <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">
           I am a...
         </h2>
@@ -70,6 +71,7 @@ export function OnboardingFlow({ onComplete, loading = false }: Props) {
 
       {/* Interests */}
       <section className="mb-7">
+        <div className="text-xs text-gray-400 mb-1">Step 2 of 3</div>
         <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">
           I care about... <span className="text-gray-400 font-normal normal-case">(pick any)</span>
         </h2>
@@ -94,16 +96,17 @@ export function OnboardingFlow({ onComplete, loading = false }: Props) {
 
       {/* Focus */}
       <section className="mb-8">
+        <div className="text-xs text-gray-400 mb-1">Step 3 of 3</div>
         <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">
           My focus is...
         </h2>
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-wrap gap-2">
           {FOCUSES.map((f) => (
             <button
               key={f.id}
               onClick={() => setFocus(f.id)}
               className={`
-                px-4 py-2 text-sm rounded border text-left transition-colors
+                px-4 py-2 text-sm rounded border transition-colors
                 ${focus === f.id
                   ? 'bg-accent text-white border-accent'
                   : 'bg-white text-gray-700 border-gray-200 hover:border-accent hover:text-accent'

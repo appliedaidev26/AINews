@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import type { Article } from '../lib/api'
 
@@ -22,9 +23,48 @@ function formatDate(iso: string | null): string {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 }
 
+// Visited article tracking via localStorage (TTL: 7 days)
+const VISITED_KEY = 'ainews_visited'
+const VISITED_TTL_MS = 7 * 24 * 60 * 60 * 1000
+
+function getVisitedIds(): Set<number> {
+  try {
+    const raw = localStorage.getItem(VISITED_KEY)
+    if (!raw) return new Set()
+    const entries: [number, number][] = JSON.parse(raw)
+    const now = Date.now()
+    return new Set(entries.filter(([, ts]) => now - ts < VISITED_TTL_MS).map(([id]) => id))
+  } catch {
+    return new Set()
+  }
+}
+
+function markVisited(id: number): void {
+  try {
+    const raw = localStorage.getItem(VISITED_KEY)
+    const entries: [number, number][] = raw ? JSON.parse(raw) : []
+    const now = Date.now()
+    const filtered = entries.filter(([eid, ts]) => eid !== id && now - ts < VISITED_TTL_MS)
+    filtered.push([id, now])
+    localStorage.setItem(VISITED_KEY, JSON.stringify(filtered))
+  } catch {
+    // localStorage unavailable — silently ignore
+  }
+}
+
 export function ArticleCard({ article, showRelevancy = false }: Props) {
+  const [visited, setVisited] = useState(false)
   const bullets = article.summary_bullets?.slice(0, 2) ?? []
   const tags = article.tags?.slice(0, 4) ?? []
+
+  useEffect(() => {
+    setVisited(getVisitedIds().has(article.id))
+  }, [article.id])
+
+  const handleTitleClick = () => {
+    markVisited(article.id)
+    setVisited(true)
+  }
 
   return (
     <div className="py-2.5 border-b border-gray-100 last:border-0 -mx-2 px-2 rounded hover:bg-gray-50 transition-colors">
@@ -35,7 +75,8 @@ export function ArticleCard({ article, showRelevancy = false }: Props) {
         )}
         <Link
           to={`/article/${article.id}`}
-          className="font-medium text-gray-900 hover:text-accent leading-snug"
+          onClick={handleTitleClick}
+          className={`font-medium leading-snug hover:text-accent ${visited ? 'text-gray-400' : 'text-gray-900'}`}
         >
           {article.title}
         </Link>
@@ -44,7 +85,10 @@ export function ArticleCard({ article, showRelevancy = false }: Props) {
       {/* Meta row */}
       <div className="flex items-center gap-1 text-xs text-gray-400 mb-1">
         {showRelevancy && article.relevancy_score !== undefined && article.relevancy_score > 0 && (
-          <span className="text-accent font-medium mr-1">
+          <span
+            className="text-accent font-medium mr-1"
+            title="Relevancy score based on your role and interests"
+          >
             {Math.round(article.relevancy_score * 100)}%
           </span>
         )}
@@ -61,7 +105,7 @@ export function ArticleCard({ article, showRelevancy = false }: Props) {
           href={article.original_url}
           target="_blank"
           rel="noopener noreferrer"
-          className="ml-0.5 text-gray-300 hover:text-accent"
+          className="ml-0.5 inline-flex items-center px-1.5 py-0.5 text-gray-300 hover:text-accent rounded"
           title="Open original"
         >
           ↗
