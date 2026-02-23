@@ -17,6 +17,15 @@ from backend.db.models import Article
 
 logger = logging.getLogger(__name__)
 
+# Module-level rate semaphore shared across concurrent enrich_articles() calls
+_rate_sem: Optional[asyncio.Semaphore] = None
+
+def _get_rate_sem() -> asyncio.Semaphore:
+    global _rate_sem
+    if _rate_sem is None:
+        _rate_sem = asyncio.Semaphore(1)
+    return _rate_sem
+
 ENRICHMENT_PROMPT = """You are an expert AI/ML analyst. Analyze the following article and return a JSON object with exactly these fields:
 
 Article Title: {title}
@@ -318,33 +327,38 @@ async def enrich_articles(
     enriched_count = 0
     abort_flag = asyncio.Event()
 
-    async def _track(article_id: int, slot: int) -> bool:
+    sem = _get_rate_sem()
+
+    async def _track(article_id: int) -> bool:
         nonlocal enriched_count
         if abort_flag.is_set():
             return False
-        await asyncio.sleep(slot * rate_interval)
-        if abort_flag.is_set():
-            return False
 
-        def _work():
-            with Session(sync_engine) as s:
-                article = s.get(Article, article_id)
-                if article is None:
-                    return False
-                try:
-                    return _enrich_one(article, s, use_openai=use_openai)
-                except GeminiFatalError:
-                    raise
+        async with sem:
+            if abort_flag.is_set():
+                return False
 
-        try:
-            ok = await asyncio.to_thread(_work)
-        except GeminiFatalError as exc:
-            logger.error(f"Fatal enrichment error — aborting all remaining slots: {exc}")
-            abort_flag.set()
-            return False
-        except Exception as exc:
-            logger.error(f"Unexpected error enriching article {article_id}: {exc}")
-            return False
+            def _work():
+                with Session(sync_engine) as s:
+                    article = s.get(Article, article_id)
+                    if article is None:
+                        return False
+                    try:
+                        return _enrich_one(article, s, use_openai=use_openai)
+                    except GeminiFatalError:
+                        raise
+
+            try:
+                ok = await asyncio.to_thread(_work)
+            except GeminiFatalError as exc:
+                logger.error(f"Fatal enrichment error — aborting all remaining slots: {exc}")
+                abort_flag.set()
+                return False
+            except Exception as exc:
+                logger.error(f"Unexpected error enriching article {article_id}: {exc}")
+                return False
+
+            await asyncio.sleep(rate_interval)
 
         if ok:
             async with lock:
@@ -357,7 +371,7 @@ async def enrich_articles(
         return bool(ok)
 
     results = await asyncio.gather(
-        *[_track(aid, i) for i, aid in enumerate(all_ids)],
+        *[_track(aid) for aid in all_ids],
         return_exceptions=True,
     )
 

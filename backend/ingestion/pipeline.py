@@ -1,6 +1,7 @@
 """Main ingestion pipeline: fetches, deduplicates, and enriches articles."""
 import asyncio
 import logging
+import threading
 import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
@@ -22,20 +23,23 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logger = logging.getLogger(__name__)
 
 
+_progress_lock = threading.Lock()
+
 def _update_progress(run_id, progress: dict):
     if run_id is None:
         return
     from sqlalchemy.orm import Session as _Session
     from backend.db import sync_engine
     from backend.db.models import PipelineRun
-    with _Session(sync_engine) as session:
-        # Read-merge-write: merge new stage fields into the existing JSONB so that
-        # metadata written at run creation (sources_used, rss_feed_ids_used,
-        # rss_feed_names_used) is preserved across every stage-update call.
-        row = session.get(PipelineRun, run_id)
-        if row is not None:
-            row.progress = {**(row.progress or {}), **progress}
-            session.commit()
+    with _progress_lock:
+        with _Session(sync_engine) as session:
+            # Read-merge-write: merge new stage fields into the existing JSONB so that
+            # metadata written at run creation (sources_used, rss_feed_ids_used,
+            # rss_feed_names_used) is preserved across every stage-update call.
+            row = session.get(PipelineRun, run_id)
+            if row is not None:
+                row.progress = {**(row.progress or {}), **progress}
+                session.commit()
 
 
 def _update_run(run_id, status, result=None, error_message=None, duration_seconds=None):
@@ -250,39 +254,30 @@ async def run_pipeline(
     totals = {"fetched": 0, "new": 0, "saved": 0, "enriched": 0}
 
     try:
-        for idx, d in enumerate(all_dates):
-            _update_progress(run_id, {
-                "date_from": str(effective_from),
-                "date_to":   str(effective_to),
-                "stage": "fetching",
-                "current_date": str(d),
-                "dates_completed": idx,
-                "dates_total": total_dates,
-                **totals,
-            })
-            day_result = await _run_one_date(d, run_id, idx, total_dates, dict(totals), effective_from, effective_to, enabled_sources, rss_feed_ids)
+        date_sem = asyncio.Semaphore(settings.pipeline_concurrency)
+
+        async def _run_with_sem(idx, d):
+            async with date_sem:
+                return (idx, await _run_one_date(d, run_id, idx, total_dates, dict(totals), effective_from, effective_to, enabled_sources, rss_feed_ids))
+
+        date_results = await asyncio.gather(*[_run_with_sem(i, d) for i, d in enumerate(all_dates)])
+        for _idx, day_result in sorted(date_results):
             for k in totals:
                 totals[k] += day_result.get(k, 0)
 
         # Trending pass: fetch HN+Reddit for yesterday/today
-        for t_idx, td in enumerate(trending_dates):
+        async def _run_trending_with_sem(t_idx, td):
             global_idx = len(all_dates) + t_idx
             logger.info(f"Trending pass: {td} (HN+Reddit only)")
-            _update_progress(run_id, {
-                "date_from": str(effective_from),
-                "date_to":   str(effective_to),
-                "stage": "fetching",
-                "current_date": str(td),
-                "dates_completed": global_idx,
-                "dates_total": total_dates,
-                "trending_pass": True,
-                **totals,
-            })
-            day_result = await _run_one_date(
-                td, run_id, global_idx, total_dates, dict(totals),
-                effective_from, effective_to,
-                enabled_sources={"hn", "reddit"}, rss_feed_ids=None,
-            )
+            async with date_sem:
+                return (t_idx, await _run_one_date(
+                    td, run_id, global_idx, total_dates, dict(totals),
+                    effective_from, effective_to,
+                    enabled_sources={"hn", "reddit"}, rss_feed_ids=None,
+                ))
+
+        trending_results = await asyncio.gather(*[_run_trending_with_sem(i, td) for i, td in enumerate(trending_dates)])
+        for _idx, day_result in sorted(trending_results):
             for k in totals:
                 totals[k] += day_result.get(k, 0)
 

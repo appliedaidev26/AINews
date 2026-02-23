@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     enrichment_batch_size: int = 10
     enrichment_rate_rpm: int = 60    # Paid Gemini tier; drop to 15 for free tier
 
+    # Pipeline
+    pipeline_concurrency: int = 2    # max dates processed in parallel
+
     # API
     api_host: str = "0.0.0.0"
     api_port: int = 8000

@@ -58,51 +58,63 @@ def _get_active_feeds(feed_ids: Optional[set[int]] = None) -> list[dict]:
     return DEFAULT_RSS_FEEDS
 
 
+def _fetch_one_feed(feed_cfg: dict, target_date: date) -> list[dict]:
+    """Fetch articles from a single RSS feed for target_date."""
+    import feedparser
+
+    articles = []
+    try:
+        feed = feedparser.parse(feed_cfg["url"])
+        entries = feed.get("entries", [])[:50]
+
+        for entry in entries:
+            url   = entry.get("link", "")
+            title = entry.get("title", "")
+            if not url or not title:
+                continue
+
+            published_at = _parse_date(entry)
+
+            if published_at is None or published_at.date() != target_date:
+                continue
+
+            author = entry.get("author") or entry.get("dc_creator")
+
+            articles.append({
+                "title": title,
+                "original_url": url,
+                "source_name": feed_cfg["name"],
+                "source_type": "rss",
+                "author": author,
+                "published_at": published_at,
+                "digest_date": target_date,
+                "engagement_signal": 0,
+                "dedup_hash": _make_hash(url),
+            })
+    except Exception as e:
+        logger.error(f"RSS fetch failed for {feed_cfg['name']}: {e}")
+
+    return articles
+
+
 def fetch_rss(target_date: Optional[date] = None, feed_ids: Optional[set[int]] = None) -> list[dict]:
     """Fetch articles from RSS feeds published on target_date."""
     target_date = target_date or date.today()
 
     try:
-        import feedparser
+        import feedparser  # noqa: F401
     except ImportError:
         logger.error("feedparser not installed")
         return []
 
     feeds = _get_active_feeds(feed_ids)
     articles = []
-    for feed_cfg in feeds:
-        try:
-            feed = feedparser.parse(feed_cfg["url"])
-            entries = feed.get("entries", [])[:50]  # check more entries to find the right date
 
-            for entry in entries:
-                url   = entry.get("link", "")
-                title = entry.get("title", "")
-                if not url or not title:
-                    continue
-
-                published_at = _parse_date(entry)
-
-                # Only include articles published on target_date (UTC)
-                if published_at is None or published_at.date() != target_date:
-                    continue
-
-                author = entry.get("author") or entry.get("dc_creator")
-
-                articles.append({
-                    "title": title,
-                    "original_url": url,
-                    "source_name": feed_cfg["name"],
-                    "source_type": "rss",
-                    "author": author,
-                    "published_at": published_at,
-                    "digest_date": target_date,
-                    "engagement_signal": 0,
-                    "dedup_hash": _make_hash(url),
-                })
-
-        except Exception as e:
-            logger.error(f"RSS fetch failed for {feed_cfg['name']}: {e}")
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = {pool.submit(_fetch_one_feed, cfg, target_date): cfg for cfg in feeds}
+        for future in as_completed(futures):
+            articles.extend(future.result())
 
     logger.info(f"RSS: fetched {len(articles)} articles for {target_date}")
     return articles
