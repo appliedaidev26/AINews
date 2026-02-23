@@ -39,7 +39,7 @@ class Settings(BaseSettings):
 
     # Enrichment
     enrichment_batch_size: int = 10
-    enrichment_rate_rpm: int = 150   # 2.5 req/s
+    enrichment_rate_rpm: int = 300   # 5 req/s
 
     # Pipeline
     pipeline_concurrency: int = 2    # max dates processed in parallel
