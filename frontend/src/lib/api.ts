@@ -227,6 +227,7 @@ export const adminApi = {
     dateTo?: string;         // YYYY-MM-DD
     sources?: string;        // comma-separated: "hn,reddit,arxiv,rss"
     rssFeedIds?: string;     // comma-separated feed IDs; omit for all active feeds
+    populateTrending?: boolean;
   } = {}) =>
     adminFetch<{ status: string; date_from: string; date_to: string; run_id: number; sources: string[] }>(
       'POST', '/admin/ingest', key, {
@@ -236,6 +237,7 @@ export const adminApi = {
         // Always send sources so the backend never falls back to its "all 4" default
         sources: opts.sources || 'hn,reddit,arxiv,rss',
         ...(opts.rssFeedIds ? { rss_feed_ids: opts.rssFeedIds } : {}),
+        ...(opts.populateTrending ? { populate_trending: 'true' } : {}),
       }
     ),
   cancelRun: (key: string, runId: number) =>

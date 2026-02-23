@@ -215,6 +215,7 @@ async def run_pipeline(
     run_id: Optional[int] = None,
     enabled_sources: Optional[set[str]] = None,
     rss_feed_ids: Optional[set[int]] = None,
+    populate_trending: bool = False,
 ) -> dict:
     # Resolve effective range
     effective_from = date_from or target_date or date.today()
@@ -227,8 +228,24 @@ async def run_pipeline(
         for i in range((effective_to - effective_from).days + 1)
     ]
 
+    # Compute trending dates that need an extra HN+Reddit pass
+    trending_dates: list[date] = []
+    if populate_trending:
+        trending_candidates = [date.today() - timedelta(days=1), date.today()]
+        # Skip dates already covered by the main range with HN+Reddit enabled
+        main_has_hn_reddit = {"hn", "reddit"}.issubset(enabled_sources)
+        main_date_set = set(all_dates)
+        for td in trending_candidates:
+            if not (main_has_hn_reddit and td in main_date_set):
+                trending_dates.append(td)
+        # Deduplicate (in case today-1 == yesterday produces duplicates)
+        trending_dates = sorted(set(trending_dates))
+
+    total_dates = len(all_dates) + len(trending_dates)
+
     t0 = time.monotonic()
-    logger.info(f"Starting pipeline for {effective_from} → {effective_to} ({len(all_dates)} day(s))")
+    logger.info(f"Starting pipeline for {effective_from} → {effective_to} ({len(all_dates)} day(s))"
+                + (f" + {len(trending_dates)} trending date(s)" if trending_dates else ""))
 
     totals = {"fetched": 0, "new": 0, "saved": 0, "enriched": 0}
 
@@ -240,10 +257,32 @@ async def run_pipeline(
                 "stage": "fetching",
                 "current_date": str(d),
                 "dates_completed": idx,
-                "dates_total": len(all_dates),
+                "dates_total": total_dates,
                 **totals,
             })
-            day_result = await _run_one_date(d, run_id, idx, len(all_dates), dict(totals), effective_from, effective_to, enabled_sources, rss_feed_ids)
+            day_result = await _run_one_date(d, run_id, idx, total_dates, dict(totals), effective_from, effective_to, enabled_sources, rss_feed_ids)
+            for k in totals:
+                totals[k] += day_result.get(k, 0)
+
+        # Trending pass: fetch HN+Reddit for yesterday/today
+        for t_idx, td in enumerate(trending_dates):
+            global_idx = len(all_dates) + t_idx
+            logger.info(f"Trending pass: {td} (HN+Reddit only)")
+            _update_progress(run_id, {
+                "date_from": str(effective_from),
+                "date_to":   str(effective_to),
+                "stage": "fetching",
+                "current_date": str(td),
+                "dates_completed": global_idx,
+                "dates_total": total_dates,
+                "trending_pass": True,
+                **totals,
+            })
+            day_result = await _run_one_date(
+                td, run_id, global_idx, total_dates, dict(totals),
+                effective_from, effective_to,
+                enabled_sources={"hn", "reddit"}, rss_feed_ids=None,
+            )
             for k in totals:
                 totals[k] += day_result.get(k, 0)
 

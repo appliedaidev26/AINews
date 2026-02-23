@@ -37,6 +37,7 @@ async def trigger_ingest(
     triggered_by: str            = Query("api"),
     sources:      str            = Query("hn,reddit,arxiv,rss", description="Comma-separated source types to include"),
     rss_feed_ids: str            = Query("", description="Comma-separated RSS feed IDs; empty means all active feeds"),
+    populate_trending: bool      = Query(False, description="Also fetch last 2 days of HN+Reddit for trending strip"),
     key: str = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -74,6 +75,7 @@ async def trigger_ingest(
             "sources_used": sorted(enabled_sources),
             "rss_feed_ids_used": sorted(parsed_feed_ids) if parsed_feed_ids is not None else None,
             "rss_feed_names_used": rss_feed_names_used,
+            "populate_trending": populate_trending,
         },
     )
     db.add(run)
@@ -82,7 +84,8 @@ async def trigger_ingest(
 
     task = asyncio.create_task(
         run_pipeline(date_from=effective_from, date_to=effective_to, run_id=run.id,
-                     enabled_sources=enabled_sources, rss_feed_ids=parsed_feed_ids)
+                     enabled_sources=enabled_sources, rss_feed_ids=parsed_feed_ids,
+                     populate_trending=populate_trending)
     )
     _active_tasks[run.id] = task
     task.add_done_callback(lambda _: _active_tasks.pop(run.id, None))
