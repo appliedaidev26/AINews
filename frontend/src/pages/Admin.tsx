@@ -598,6 +598,9 @@ export function Admin() {
   const [feeds, setFeeds] = useState<RssFeed[]>([])
   const [selectedFeedIds, setSelectedFeedIds] = useState<Set<number>>(new Set())
 
+  // Populate Trending — also fetch last 2 days of HN+Reddit
+  const [populateTrending, setPopulateTrending] = useState(false)
+
   // Run History expand state
   const [expandedRunId, setExpandedRunId] = useState<number | null>(null)
 
@@ -739,6 +742,7 @@ export function Admin() {
         dateTo,
         sources: sourcesList.join(','),
         rssFeedIds,
+        populateTrending,
       })
       await fetchRuns(key)
     } catch (err) {
@@ -940,9 +944,22 @@ export function Admin() {
                 )}
               </div>
             </div>
+            <div className="w-full">
+              <label className={`inline-flex items-center gap-2 text-xs cursor-pointer select-none ${!!activeRun ? 'opacity-50 cursor-not-allowed' : 'text-gray-600'}`}>
+                <input
+                  type="checkbox"
+                  checked={populateTrending}
+                  disabled={!!activeRun}
+                  onChange={() => setPopulateTrending(prev => !prev)}
+                  className="accent-indigo-600 w-3 h-3"
+                />
+                <span className="font-medium">Populate Trending</span>
+                <span className="text-gray-400">— also fetch last 2 days of HN + Reddit for trending strip</span>
+              </label>
+            </div>
             <button
               onClick={handleTrigger}
-              disabled={!!activeRun || triggering || (selectedSources.size === 0 && selectedFeedIds.size === 0)}
+              disabled={!!activeRun || triggering || (selectedSources.size === 0 && selectedFeedIds.size === 0 && !populateTrending)}
               className="bg-indigo-600 text-white text-sm px-4 py-2 rounded hover:bg-indigo-700 disabled:opacity-50"
             >
               {triggering ? 'Starting…' : 'Run Pipeline'}
