@@ -39,6 +39,7 @@ class Settings(BaseSettings):
 
     # Enrichment
     enrichment_batch_size: int = 10
+    enrichment_rate_rpm: int = 60    # Paid Gemini tier; drop to 15 for free tier
 
     # API
     api_host: str = "0.0.0.0"

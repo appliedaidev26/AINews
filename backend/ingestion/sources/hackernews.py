@@ -1,7 +1,7 @@
 """Hacker News ingestion via Algolia Search API."""
 import hashlib
 import logging
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone, timedelta, date
 from typing import Optional
 
 import httpx
@@ -33,15 +33,20 @@ def _make_hash(url: str) -> str:
 
 
 async def fetch_hackernews(target_date: Optional[date] = None) -> list[dict]:
-    """Fetch AI/ML stories from HN Algolia API for a given date."""
+    """Fetch AI/ML stories from HN Algolia API published on target_date."""
     target_date = target_date or date.today()
+
+    # Compute Unix timestamp range for the full day (UTC)
+    day_start = int(datetime(target_date.year, target_date.month, target_date.day,
+                             0, 0, 0, tzinfo=timezone.utc).timestamp())
+    day_end   = day_start + 86400  # exclusive: start of next day
+
     articles = []
 
-    # Fetch top stories, filtered by score
     params = {
         "query": "AI machine learning LLM",
         "tags": "story",
-        "numericFilters": f"points>={settings.hn_min_score}",
+        "numericFilters": f"points>={settings.hn_min_score},created_at_i>={day_start},created_at_i<{day_end}",
         "hitsPerPage": 100,
     }
 
@@ -56,17 +61,15 @@ async def fetch_hackernews(target_date: Optional[date] = None) -> list[dict]:
 
     for hit in data.get("hits", []):
         title = hit.get("title", "")
-        url = hit.get("url", "")
+        url   = hit.get("url", "")
         object_id = hit.get("objectID", "")
 
         if not title or not _is_ai_ml(title, url):
             continue
 
-        # Fallback URL if no external URL (self-posts)
         if not url:
             url = f"https://news.ycombinator.com/item?id={object_id}"
 
-        # Parse timestamp
         created_at = hit.get("created_at")
         published_at = None
         if created_at:
@@ -87,5 +90,5 @@ async def fetch_hackernews(target_date: Optional[date] = None) -> list[dict]:
             "dedup_hash": _make_hash(url),
         })
 
-    logger.info(f"HN: fetched {len(articles)} AI/ML articles")
+    logger.info(f"HN: fetched {len(articles)} AI/ML articles for {target_date}")
     return articles
