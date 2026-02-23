@@ -23,7 +23,7 @@ _rate_sem: Optional[asyncio.Semaphore] = None
 def _get_rate_sem() -> asyncio.Semaphore:
     global _rate_sem
     if _rate_sem is None:
-        _rate_sem = asyncio.Semaphore(1)
+        _rate_sem = asyncio.Semaphore(5)
     return _rate_sem
 
 ENRICHMENT_PROMPT = """You are an expert AI/ML analyst. Analyze the following article and return a JSON object with exactly these fields:

@@ -19,7 +19,7 @@ class Settings(BaseSettings):
 
     # Gemini
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.5-flash"
+    gemini_model: str = "gemini-1.5-pro"
     gemini_pro_model: str = "gemini-2.5-pro"
 
     # Reddit API
@@ -39,7 +39,7 @@ class Settings(BaseSettings):
 
     # Enrichment
     enrichment_batch_size: int = 10
-    enrichment_rate_rpm: int = 60    # Paid Gemini tier; drop to 15 for free tier
+    enrichment_rate_rpm: int = 300   # 5 req/s; drop to 15 for free tier
 
     # Pipeline
     pipeline_concurrency: int = 2    # max dates processed in parallel
