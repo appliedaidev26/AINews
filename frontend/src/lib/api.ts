@@ -254,4 +254,17 @@ export const adminApi = {
     adminFetch<{ status: string; id: number }>('DELETE', `/admin/sources/rss/${id}`, key),
   clearDb: (key: string) =>
     adminFetch<{ status: string; deleted: { articles: number; pipeline_runs: number } }>('POST', '/admin/clear-db', key),
+  retryFailed: async (key: string, params?: { date_from?: string; date_to?: string }) => {
+    const p = new URLSearchParams()
+    if (params?.date_from) p.set('date_from', params.date_from)
+    if (params?.date_to) p.set('date_to', params.date_to)
+    const qs = p.toString() ? `?${p}` : ''
+    const res = await fetch(`${BASE}/admin/retry-failed${qs}`, {
+      method: 'POST',
+      headers: { 'X-Admin-Key': key },
+    })
+    if (res.status === 403) throw new Error('ADMIN_FORBIDDEN')
+    if (!res.ok) throw new Error(await res.text())
+    return res.json() as Promise<{ status: string; run_id?: number; article_count: number; date_from?: string; date_to?: string }>
+  },
 }

@@ -408,7 +408,11 @@ function SourcesPanel({ adminKey }: { adminKey: string }) {
   )
 }
 
-function CoveragePanel({ adminKey }: { adminKey: string }) {
+function CoveragePanel({ adminKey, activeRun, onRetryFailed }: {
+  adminKey: string
+  activeRun: PipelineRun | null
+  onRetryFailed: (targetDate: string) => void
+}) {
   const [coverage, setCoverage] = useState<CoverageDay[]>([])
   const [loading, setLoading] = useState(true)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -452,7 +456,20 @@ function CoveragePanel({ adminKey }: { adminKey: string }) {
                   <td className="px-3 py-2 text-green-700">{day.enriched}</td>
                   <td className="px-3 py-2 text-yellow-700">{day.pending}</td>
                   <td className="px-3 py-2 text-red-700">{day.failed}</td>
-                  <td className="px-3 py-2"><CoverageStatusDot day={day} /></td>
+                  <td className="px-3 py-2">
+                    <div className="flex items-center gap-2">
+                      <CoverageStatusDot day={day} />
+                      {day.failed > 0 && (
+                        <button
+                          onClick={() => onRetryFailed(day.date)}
+                          disabled={!!activeRun}
+                          className="text-xs px-2 py-0.5 border border-red-300 text-red-600 hover:bg-red-50 rounded disabled:opacity-40"
+                        >
+                          Retry {day.failed}
+                        </button>
+                      )}
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -770,6 +787,20 @@ export function Admin() {
     }
   }
 
+  async function handleRetryFailed(targetDate: string) {
+    try {
+      const res = await adminApi.retryFailed(key, { date_from: targetDate, date_to: targetDate })
+      if (res.status === 'nothing_to_retry') {
+        setError('No failed articles found for that date.')
+        return
+      }
+      await fetchRuns(key)
+    } catch (err) {
+      if (err instanceof Error && err.message === 'ADMIN_FORBIDDEN') { clearKey(); return }
+      setError(err instanceof Error ? err.message : 'Retry failed')
+    }
+  }
+
   async function handleCancel(runId: number) {
     setCancelling(true)
     try {
@@ -1016,7 +1047,7 @@ export function Admin() {
         <SourcesPanel adminKey={key} />
 
         {/* Coverage panel */}
-        <CoveragePanel adminKey={key} />
+        <CoveragePanel adminKey={key} activeRun={activeRun} onRetryFailed={handleRetryFailed} />
 
         {/* Danger Zone */}
         <section className="border border-red-200 rounded p-4 space-y-2">

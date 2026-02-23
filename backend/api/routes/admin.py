@@ -12,8 +12,9 @@ from sqlalchemy import select, desc, text, delete, func
 
 from backend.config import settings
 from backend.db import get_db
-from backend.db.models import PipelineRun, RssFeed
+from backend.db.models import Article, PipelineRun, RssFeed
 from backend.ingestion.pipeline import run_pipeline
+from backend.processing.enricher import enrich_failed_articles
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -121,6 +122,57 @@ async def cancel_run(
     run.error_message = "Cancelled by admin (task lost — server had restarted)"
     await db.commit()
     return {"status": "cancelled", "run_id": run_id}
+
+
+@router.post("/retry-failed")
+async def retry_failed_enrichments(
+    date_from: Optional[date] = Query(None),
+    date_to: Optional[date] = Query(None),
+    key: str = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    effective_from = date_from or (date.today() - timedelta(days=90))
+    effective_to = date_to or date.today()
+
+    count_result = await db.execute(
+        select(func.count(Article.id)).where(
+            Article.is_enriched == -1,
+            Article.digest_date >= effective_from,
+            Article.digest_date <= effective_to,
+        )
+    )
+    article_count = count_result.scalar() or 0
+
+    if article_count == 0:
+        return {"status": "nothing_to_retry", "article_count": 0}
+
+    run = PipelineRun(
+        started_at=datetime.now(timezone.utc),
+        status="running",
+        triggered_by="retry_failed",
+        progress={
+            "stage": "enriching",
+            "fetched": 0, "new": 0, "saved": 0, "enriched": 0,
+            "total_to_enrich": article_count,
+        },
+    )
+    db.add(run)
+    await db.commit()
+    await db.refresh(run)
+
+    task = asyncio.create_task(
+        enrich_failed_articles(effective_from, effective_to, run.id)
+    )
+    _active_tasks[run.id] = task
+    task.add_done_callback(lambda _: _active_tasks.pop(run.id, None))
+
+    return {
+        "status": "started",
+        "run_id": run.id,
+        "article_count": article_count,
+        "date_from": str(effective_from),
+        "date_to": str(effective_to),
+    }
 
 
 @router.get("/runs/{run_id}")

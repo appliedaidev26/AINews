@@ -2,14 +2,20 @@
 import asyncio
 import json
 import logging
+import ssl
+import socket
 import time
 from datetime import date
 from typing import Optional
 
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import (
+    retry, stop_after_attempt, wait_exponential,
+    retry_if_exception, before_sleep_log,
+)
 import google.api_core.exceptions
+from requests.exceptions import SSLError as RequestsSSLError, ConnectionError as RequestsConnectionError
 from sqlalchemy.orm import Session
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from backend.config import settings
 from backend.db import sync_engine
@@ -174,13 +180,31 @@ def _probe_gemini() -> None:
         logger.warning(f"Gemini probe returned a transient error (will attempt enrichment anyway): {exc}")
 
 
+def _is_retryable(exc: BaseException) -> bool:
+    """Return True for transient errors that warrant a retry in _call_gemini."""
+    if isinstance(exc, (google.api_core.exceptions.ResourceExhausted,
+                        google.api_core.exceptions.ServiceUnavailable)):
+        return True
+    if isinstance(exc, (ssl.SSLError, socket.error, ConnectionError,
+                        RequestsSSLError, RequestsConnectionError)):
+        return True
+    # GeminiFatalError must NOT be retried
+    if isinstance(exc, GeminiFatalError):
+        return False
+    # Catch-all: SSL/EOF/connection-reset surfaced through gRPC or httpx
+    msg = str(exc).lower()
+    if "ssl" in msg or "eof" in msg:
+        return True
+    if "connection" in msg and "reset" in msg:
+        return True
+    return False
+
+
 @retry(
     stop=stop_after_attempt(4),
     wait=wait_exponential(multiplier=2, min=10, max=60),
-    retry=retry_if_exception_type(
-        (google.api_core.exceptions.ResourceExhausted,
-         google.api_core.exceptions.ServiceUnavailable)
-    ),
+    retry=retry_if_exception(_is_retryable),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
     reraise=True,
 )
 def _call_gemini(prompt: str) -> dict:
@@ -385,6 +409,42 @@ async def enrich_articles(
         _compute_related(s, enriched_ids)
 
     return len(enriched_ids)
+
+
+async def enrich_failed_articles(
+    date_from: date,
+    date_to: date,
+    run_id: int,
+) -> int:
+    """Query all is_enriched=-1 articles in the date range and re-enrich them."""
+    with Session(sync_engine) as s:
+        failed_ids = list(s.scalars(
+            select(Article.id).where(
+                Article.is_enriched == -1,
+                Article.digest_date >= date_from,
+                Article.digest_date <= date_to,
+            )
+        ).all())
+
+    if not failed_ids:
+        logger.info(f"retry_failed: no failed articles in {date_from}–{date_to}")
+        return 0
+
+    logger.info(f"retry_failed: re-enriching {len(failed_ids)} articles ({date_from}–{date_to})")
+    # Reset to pending so _enrich_one can overwrite them
+    with Session(sync_engine) as s:
+        s.execute(
+            update(Article)
+            .where(Article.id.in_(failed_ids))
+            .values(is_enriched=0)
+        )
+        s.commit()
+
+    return await enrich_articles(
+        saved_ids=failed_ids,
+        run_id=run_id,
+        running_totals={"fetched": 0, "new": 0, "saved": 0, "enriched": 0},
+    )
 
 
 def _update_progress_enriching(
