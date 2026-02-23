@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { ArticleDetail as ArticleDetailType } from '../lib/api'
 import { Link } from 'react-router-dom'
 
@@ -64,6 +65,7 @@ function formatShortDate(iso: string | null): string {
 
 export function ArticleDetail({ article }: Props) {
   const topRelated = article.related_articles?.[0] ?? null
+  const [showAudience, setShowAudience] = useState(false)
 
   return (
     <div className="max-w-2xl mx-auto">
@@ -155,20 +157,36 @@ export function ArticleDetail({ article }: Props) {
         </section>
       )}
 
-      {/* Tags */}
+      {/* Tags — B1: link to feed filtered by this tag */}
       {article.tags?.length > 0 && (
         <div className="flex gap-1.5 flex-wrap mb-5">
           {article.tags.map((tag) => (
-            <span key={tag} className="tag-pill">{tag}</span>
+            <Link
+              key={tag}
+              to={`/?tags=${encodeURIComponent(tag)}`}
+              className="tag-pill hover:border-indigo-300 hover:text-indigo-600 transition-colors"
+            >
+              {tag}
+            </Link>
           ))}
         </div>
       )}
 
-      {/* Audience Relevance */}
+      {/* Audience Relevance — C1: collapsed by default */}
       {article.audience_scores && Object.keys(article.audience_scores).length > 0 && (
         <section className="mb-5">
-          <p className="section-heading">Relevance by Role</p>
-          <AudienceBars scores={article.audience_scores} />
+          <button
+            onClick={() => setShowAudience((o) => !o)}
+            className="section-heading flex items-center gap-1 w-full text-left"
+          >
+            Relevance by Role
+            <span className="text-gray-300 ml-0.5">{showAudience ? '▾' : '▸'}</span>
+          </button>
+          {showAudience && (
+            <div className="mt-2">
+              <AudienceBars scores={article.audience_scores} />
+            </div>
+          )}
         </section>
       )}
 

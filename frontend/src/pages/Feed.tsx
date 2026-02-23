@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { api, type Article } from '../lib/api'
 import { ArticleCard } from '../components/ArticleCard'
 import { Sidebar, type SidebarFilters } from '../components/Sidebar'
@@ -82,8 +82,13 @@ function dateRangeForPreset(preset: DatePreset, rangeFrom: string | null, rangeT
 export function Feed() {
   const { profile } = useUserProfile()
   const { user, signOut } = useAuth()
+  const [searchParams] = useSearchParams()
   const [articles, setArticles] = useState<Article[]>([])
-  const [filters, setFilters] = useState<SidebarFilters>({ category: '', topics: [], sources: [], blogs: [] })
+  const [filters, setFilters] = useState<SidebarFilters>(() => {
+    // Pre-populate tag filter when navigating from an article detail tag link (?tags=llms)
+    const tag = searchParams.get('tags')
+    return { category: '', topics: tag ? [tag] : [], sources: [], blogs: [] }
+  })
   const [datePreset, setDatePreset] = useState<DatePreset>('all')
   const [rangeFrom, setRangeFrom] = useState<string | null>(MONTHS[0].value)
   const [rangeTo,   setRangeTo]   = useState<string | null>(MONTHS[0].value)

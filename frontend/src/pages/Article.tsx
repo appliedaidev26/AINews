@@ -9,6 +9,7 @@ export function Article() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showSticky, setShowSticky] = useState(false)
+  const [progress, setProgress] = useState(0)
 
   useEffect(() => {
     if (!id) return
@@ -24,13 +25,25 @@ export function Article() {
   }, [id])
 
   useEffect(() => {
-    const handleScroll = () => setShowSticky(window.scrollY > 120)
+    const handleScroll = () => {
+      setShowSticky(window.scrollY > 120)
+      const scrollable = document.documentElement.scrollHeight - window.innerHeight
+      setProgress(scrollable > 0 ? Math.min(100, (window.scrollY / scrollable) * 100) : 0)
+    }
     window.addEventListener('scroll', handleScroll, { passive: true })
     return () => window.removeEventListener('scroll', handleScroll)
   }, [])
 
   return (
     <div className="max-w-2xl mx-auto px-4 py-6">
+      {/* D1: Reading progress bar — sits above everything at viewport top */}
+      <div className="fixed top-0 left-0 right-0 z-[60] h-0.5 bg-gray-100">
+        <div
+          className="h-full bg-indigo-500 transition-[width] duration-75"
+          style={{ width: `${progress}%` }}
+        />
+      </div>
+
       {/* Sticky back-nav — appears after scrolling past title */}
       {showSticky && (
         <div className="fixed top-0 left-0 right-0 z-50 bg-white border-b border-gray-200">
