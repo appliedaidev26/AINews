@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { api, type TrendingArticle } from '../lib/api'
 import { getVisitedIds, markVisited } from '../lib/visited'
@@ -8,6 +8,9 @@ const HOUR_OPTIONS = [
   { value: 48,  label: '48h' },
   { value: 168, label: '7d'  },
 ]
+
+// One card (w-52 = 208px) + one gap (gap-3 = 12px)
+const CARD_STEP = 220
 
 function categoryClass(category: string | null): string {
   if (!category) return 'category-badge'
@@ -30,14 +33,40 @@ export function TrendingStrip() {
   const [articles, setArticles] = useState<TrendingArticle[]>([])
   const [loading, setLoading] = useState(true)
   const [visitedIds, setVisitedIds] = useState<Set<number>>(() => getVisitedIds())
+  const [canScrollLeft, setCanScrollLeft] = useState(false)
+  const [canScrollRight, setCanScrollRight] = useState(false)
+  const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     setLoading(true)
-    api.getTrending({ hours, limit: 5 })
+    api.getTrending({ hours, limit: 8 })
       .then((res) => setArticles(res.articles))
       .catch(() => {})
       .finally(() => setLoading(false))
   }, [hours])
+
+  // Update scroll-arrow visibility on load and while scrolling
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+
+    const update = () => {
+      setCanScrollLeft(el.scrollLeft > 0)
+      setCanScrollRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 1)
+    }
+
+    // Small delay so the DOM has settled after articles render
+    const timer = setTimeout(update, 50)
+    el.addEventListener('scroll', update, { passive: true })
+    return () => {
+      clearTimeout(timer)
+      el.removeEventListener('scroll', update)
+    }
+  }, [articles])
+
+  const scroll = (dir: 1 | -1) => {
+    scrollRef.current?.scrollBy({ left: dir * CARD_STEP, behavior: 'smooth' })
+  }
 
   const handleVisit = (id: number) => {
     markVisited(id)
@@ -50,25 +79,47 @@ export function TrendingStrip() {
     <div className="mb-5">
       <div className="flex items-center justify-between mb-2">
         <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Trending</span>
-        <div className="flex items-center gap-0.5">
-          {HOUR_OPTIONS.map(({ value, label }) => (
+        <div className="flex items-center gap-3">
+          {/* Scroll arrows */}
+          <div className="flex items-center gap-0.5">
             <button
-              key={value}
-              onClick={() => setHours(value)}
-              className={`text-xs px-2 py-0.5 rounded transition-colors ${
-                hours === value
-                  ? 'bg-indigo-600 text-white'
-                  : 'text-gray-400 hover:text-gray-600'
-              }`}
+              onClick={() => scroll(-1)}
+              disabled={!canScrollLeft}
+              className="text-base leading-none text-gray-300 hover:text-gray-600 disabled:opacity-25 disabled:cursor-default px-0.5 transition-colors"
+              aria-label="Scroll left"
             >
-              {label}
+              ‹
             </button>
-          ))}
+            <button
+              onClick={() => scroll(1)}
+              disabled={!canScrollRight}
+              className="text-base leading-none text-gray-300 hover:text-gray-600 disabled:opacity-25 disabled:cursor-default px-0.5 transition-colors"
+              aria-label="Scroll right"
+            >
+              ›
+            </button>
+          </div>
+          {/* Time window toggle */}
+          <div className="flex items-center gap-0.5">
+            {HOUR_OPTIONS.map(({ value, label }) => (
+              <button
+                key={value}
+                onClick={() => setHours(value)}
+                className={`text-xs px-2 py-0.5 rounded transition-colors ${
+                  hours === value
+                    ? 'bg-indigo-600 text-white'
+                    : 'text-gray-400 hover:text-gray-600'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
       <div className="relative">
-        <div className="flex gap-3 overflow-x-auto pb-2">
+        <div ref={scrollRef} className="flex gap-3 overflow-x-auto pb-2">
           {loading
             ? Array.from({ length: 5 }).map((_, i) => (
                 <div key={i} className="w-52 flex-shrink-0 border border-gray-200 rounded p-3 animate-pulse">
@@ -112,7 +163,10 @@ export function TrendingStrip() {
                 )
               })}
         </div>
-        {/* Right-edge fade signals more content is scrollable */}
+        {/* Edge fades — left appears once user has scrolled right */}
+        {canScrollLeft && (
+          <div className="pointer-events-none absolute inset-y-0 left-0 w-10 bg-gradient-to-r from-white to-transparent" />
+        )}
         <div className="pointer-events-none absolute inset-y-0 right-0 w-10 bg-gradient-to-l from-white to-transparent" />
       </div>
     </div>
