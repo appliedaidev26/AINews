@@ -288,15 +288,21 @@ export function Feed() {
           )}
 
           {!loading && !error && articles.length === 0 && (
-            <div className="py-12 text-center text-gray-400 text-sm">
-              No articles found.{' '}
-              {(filters.category || filters.topics.length > 0 || filters.sources.length > 0) && (
-                <button
-                  onClick={() => setFilters({ category: '', topics: [], sources: [] })}
-                  className="underline hover:text-gray-600"
-                >
-                  Clear filters
-                </button>
+            <div className="py-12 text-center space-y-1">
+              <p className="text-sm text-gray-500">No articles to show.</p>
+              {(filters.category || filters.topics.length > 0 || filters.sources.length > 0) ? (
+                <p className="text-xs text-gray-400">
+                  Try{' '}
+                  <button
+                    onClick={() => setFilters({ category: '', topics: [], sources: [] })}
+                    className="underline hover:text-gray-600"
+                  >
+                    clearing the filters
+                  </button>
+                  {' '}or selecting a different date range.
+                </p>
+              ) : (
+                <p className="text-xs text-gray-400">Try selecting a wider date range.</p>
               )}
             </div>
           )}

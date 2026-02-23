@@ -1,6 +1,7 @@
 """FastAPI application entry point."""
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -41,10 +42,35 @@ def _init_firebase() -> None:
         logger.error(f"Firebase Admin init failed: {exc}")
 
 
+async def _cleanup_orphaned_runs() -> None:
+    """Mark any runs stuck in 'running' from a previous server crash as 'failed'."""
+    from sqlalchemy import update as sa_update
+    from backend.db import async_engine
+    from backend.db.models import PipelineRun
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    async with AsyncSession(async_engine) as session:
+        result = await session.execute(
+            sa_update(PipelineRun)
+            .where(PipelineRun.status == "running")
+            .values(
+                status="failed",
+                completed_at=datetime.now(timezone.utc),
+                error_message="Server restarted while run was active",
+            )
+            .returning(PipelineRun.id)
+        )
+        orphaned = result.scalars().all()
+        await session.commit()
+    if orphaned:
+        logger.warning(f"Marked {len(orphaned)} orphaned run(s) as failed on startup: {orphaned}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting up — creating tables if needed")
     await create_tables()
+    await _cleanup_orphaned_runs()
     _init_firebase()
     yield
     logger.info("Shutting down")

@@ -233,4 +233,6 @@ export const adminApi = {
     adminFetchBody<RssFeed>('PUT', `/admin/sources/rss/${id}`, key, feed),
   deleteRssFeed: (key: string, id: number) =>
     adminFetch<{ status: string; id: number }>('DELETE', `/admin/sources/rss/${id}`, key),
+  clearDb: (key: string) =>
+    adminFetch<{ status: string; deleted: { articles: number; pipeline_runs: number } }>('POST', '/admin/clear-db', key),
 }

@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc, text, delete
+from sqlalchemy import select, desc, text, delete, func
 
 from backend.config import settings
 from backend.db import get_db
@@ -73,11 +73,21 @@ async def cancel_run(
     db: AsyncSession = Depends(get_db),
 ):
     task = _active_tasks.get(run_id)
-    if task is None or task.done():
-        raise HTTPException(status_code=404, detail="No active task found for this run_id")
+    if task is not None and not task.done():
+        task.cancel()  # Raises CancelledError inside pipeline coroutine
+        return {"status": "cancelling", "run_id": run_id}
 
-    task.cancel()  # Raises CancelledError inside pipeline coroutine
-    return {"status": "cancelling", "run_id": run_id}
+    # Task not in memory — server may have restarted. Fall back to direct DB update.
+    result = await db.execute(select(PipelineRun).where(PipelineRun.id == run_id))
+    run = result.scalar_one_or_none()
+    if not run or run.status != "running":
+        raise HTTPException(status_code=404, detail="No active run found for this run_id")
+
+    run.status = "cancelled"
+    run.completed_at = datetime.now(timezone.utc)
+    run.error_message = "Cancelled by admin (task lost — server had restarted)"
+    await db.commit()
+    return {"status": "cancelled", "run_id": run_id}
 
 
 @router.get("/runs/{run_id}")
@@ -263,6 +273,28 @@ async def update_rss_feed(
     await db.commit()
     await db.refresh(feed)
     return feed.to_dict()
+
+
+@router.post("/clear-db")
+async def clear_db(
+    key: str = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Truncate articles, pipeline_runs, and user_article_scores. Preserves rss_feeds and user_profiles."""
+    article_count = (await db.execute(text("SELECT COUNT(*) FROM articles"))).scalar()
+    run_count     = (await db.execute(text("SELECT COUNT(*) FROM pipeline_runs"))).scalar()
+
+    await db.execute(text(
+        "TRUNCATE TABLE articles, pipeline_runs, user_article_scores RESTART IDENTITY CASCADE"
+    ))
+    await db.commit()
+
+    logger.warning(f"DB cleared by admin: {article_count} articles, {run_count} pipeline runs deleted")
+    return {
+        "status":    "cleared",
+        "deleted":   {"articles": article_count, "pipeline_runs": run_count},
+        "preserved": ["rss_feeds", "user_profiles"],
+    }
 
 
 @router.delete("/sources/rss/{feed_id}")

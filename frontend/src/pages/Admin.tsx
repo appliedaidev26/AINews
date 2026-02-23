@@ -54,34 +54,64 @@ function StatusBadge({ status }: { status: PipelineRun['status'] }) {
 
 function ProgressPanel({ run }: { run: PipelineRun }) {
   const p = run.progress ?? {}
-  const stage = p.stage
-
-  const steps: { key: PipelineStage; label: string; value?: string }[] = [
-    { key: 'fetching',  label: 'Fetch',    value: p.fetched != null ? `${p.fetched} articles` : undefined },
-    { key: 'filtering', label: 'Filter',   value: p.fetched != null && p.new != null ? `${p.new} new of ${p.fetched}` : undefined },
-    { key: 'deduping',  label: 'Dedup',    value: p.deduped != null ? `${p.deduped} unique` : undefined },
-    { key: 'saving',    label: 'Save',     value: p.saved != null ? `${p.saved} saved` : undefined },
-    { key: 'enriching', label: 'Summarize', value: p.total_to_enrich != null ? `${p.enriched ?? 0} / ${p.total_to_enrich}` : undefined },
-  ]
+  const stage = p.stage as PipelineStage | undefined
 
   const stageOrder: PipelineStage[] = ['fetching', 'filtering', 'deduping', 'saving', 'enriching']
   const currentIdx = stage ? stageOrder.indexOf(stage) : -1
 
-  const isMultiDate = p.dates_total != null && p.dates_total > 1
+  // Step values are only populated once the stage has *completed* (currentIdx > i),
+  // so numbers always reflect finalized state. Exception: enriching shows live progress.
+  const steps: { key: PipelineStage; label: string; value?: string }[] = [
+    {
+      key: 'fetching', label: 'Fetch',
+      // p.fetched starts at 0 from running_totals; only meaningful once filtering begins
+      value: currentIdx > 0 && p.fetched != null ? `${p.fetched}` : undefined,
+    },
+    {
+      key: 'filtering', label: 'Filter',
+      // p.new = running_totals["new"] = 0 while filtering is active (count not yet computed);
+      // only reliable once deduping stage starts
+      value: currentIdx > 1 && p.new != null ? `${p.new} new` : undefined,
+    },
+    {
+      key: 'deduping', label: 'Dedup',
+      // p.deduped is only emitted in the saving-stage payload; absent in enriching
+      value: p.deduped != null ? `${p.deduped} uniq` : undefined,
+    },
+    {
+      key: 'saving', label: 'Save',
+      // p.saved during saving = previous dates' accumulated total (current date not yet flushed);
+      // current_totals is applied once enriching starts, so only show then
+      value: currentIdx > 3 && p.saved != null ? `${p.saved} saved` : undefined,
+    },
+    {
+      key: 'enriching', label: 'Summarize',
+      value: p.total_to_enrich != null ? `${p.enriched ?? 0}/${p.total_to_enrich}` : undefined,
+    },
+  ]
+
+  const isMultiDate = (p.dates_total ?? 0) > 1
+  // dates_completed = index of the date currently being processed (0-based)
+  //   = number of dates fully completed so far
+  const datesCompleted = p.dates_completed ?? 0
+  const datesTotal     = p.dates_total ?? 1
 
   return (
     <div className="border border-gray-200 rounded p-4 space-y-3">
-      {/* Date-range progress */}
+      {/* Multi-date progress: bar width = completed/total; text shows which date is active */}
       {isMultiDate && (
-        <div className="flex items-center gap-3">
-          <span className="text-xs text-gray-500">
-            Processing date {(p.dates_completed ?? 0) + 1} / {p.dates_total}
-            {p.current_date ? ` — ${p.current_date}` : ''}
-          </span>
-          <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+        <div className="space-y-1">
+          <div className="flex items-center justify-between text-xs text-gray-500">
+            <span>
+              Date {datesCompleted + 1} / {datesTotal}
+              {p.current_date ? ` — ${p.current_date}` : ''}
+            </span>
+            <span>{datesCompleted} / {datesTotal} complete</span>
+          </div>
+          <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
             <div
               className="h-full bg-indigo-300 rounded-full transition-all duration-500"
-              style={{ width: `${(((p.dates_completed ?? 0) + 1) / (p.dates_total ?? 1)) * 100}%` }}
+              style={{ width: `${(datesCompleted / datesTotal) * 100}%` }}
             />
           </div>
         </div>
@@ -92,14 +122,13 @@ function ProgressPanel({ run }: { run: PipelineRun }) {
         {stage ? STAGE_LABELS[stage] : 'Starting…'}
       </p>
 
-      {/* Running status line */}
+      {/* Running counts — only show each value once its stage has completed */}
       <p className="text-xs text-gray-500 font-mono leading-relaxed">
         {[
-          p.fetched   != null                         && `fetched ${p.fetched}`,
-          p.new       != null                         && `${p.new} new`,
-          p.deduped   != null                         && `${p.deduped} unique`,
-          p.saved     != null                         && `${p.saved} saved`,
-          p.total_to_enrich != null                   && `enriched ${p.enriched ?? 0}/${p.total_to_enrich}`,
+          currentIdx > 0 && p.fetched        != null && `fetched ${p.fetched}`,
+          currentIdx > 1 && p.new            != null && `${p.new} new`,
+          currentIdx > 3 && p.saved          != null && `${p.saved} saved`,
+          p.total_to_enrich                  != null && `enriched ${p.enriched ?? 0}/${p.total_to_enrich}`,
         ].filter(Boolean).join(' · ') || 'Starting…'}
       </p>
 
@@ -120,12 +149,12 @@ function ProgressPanel({ run }: { run: PipelineRun }) {
                   {done ? '✓' : i + 1}
                 </div>
                 <span className="text-xs text-gray-500 mt-1 text-center leading-tight">{step.label}</span>
-                {step.value && (done || active) && (
+                {step.value != null && (
                   <span className="text-xs font-medium text-gray-700 text-center leading-tight">{step.value}</span>
                 )}
               </div>
               {i < steps.length - 1 && (
-                <div className={`h-px w-6 mb-4 ${currentIdx > i ? 'bg-green-400' : 'bg-gray-200'}`} />
+                <div className={`h-px w-6 mb-4 ${done ? 'bg-green-400' : 'bg-gray-200'}`} />
               )}
             </div>
           )
@@ -409,6 +438,8 @@ export function Admin() {
   const [error, setError] = useState<string | null>(null)
   const [triggering, setTriggering] = useState(false)
   const [cancelling, setCancelling] = useState(false)
+  const [clearConfirm, setClearConfirm] = useState(false)
+  const [clearing, setClearing] = useState(false)
 
   // Date-range form state — default both to today
   const [dateFrom, setDateFrom] = useState(isoDate(0))
@@ -539,6 +570,23 @@ export function Admin() {
       setError(err instanceof Error ? err.message : 'Trigger failed')
     } finally {
       setTriggering(false)
+    }
+  }
+
+  async function handleClearDb() {
+    if (!clearConfirm) { setClearConfirm(true); return }
+    setClearing(true)
+    setClearConfirm(false)
+    try {
+      const res = await adminApi.clearDb(key)
+      setRuns([])
+      setError(null)
+      alert(`Cleared: ${res.deleted.articles} articles, ${res.deleted.pipeline_runs} pipeline runs.`)
+    } catch (err) {
+      if (err instanceof Error && err.message === 'ADMIN_FORBIDDEN') { clearKey(); return }
+      setError(err instanceof Error ? err.message : 'Clear failed')
+    } finally {
+      setClearing(false)
     }
   }
 
@@ -690,6 +738,29 @@ export function Admin() {
 
         {/* Coverage panel */}
         <CoveragePanel adminKey={key} />
+
+        {/* Danger Zone */}
+        <section className="border border-red-200 rounded p-4 space-y-2">
+          <p className="text-xs font-semibold text-red-700 uppercase tracking-wide">Danger Zone</p>
+          <div className="flex items-center gap-4">
+            <div className="flex-1">
+              <p className="text-sm font-medium text-gray-800">Clear Database</p>
+              <p className="text-xs text-gray-500">Deletes all articles and pipeline run history. RSS feed sources and user profiles are preserved.</p>
+            </div>
+            <button
+              onClick={handleClearDb}
+              onBlur={() => setClearConfirm(false)}
+              disabled={clearing || !!activeRun}
+              className={`text-sm px-4 py-2 rounded border whitespace-nowrap transition-colors disabled:opacity-50 ${
+                clearConfirm
+                  ? 'bg-red-600 text-white border-red-600 hover:bg-red-700'
+                  : 'border-red-300 text-red-600 hover:bg-red-50'
+              }`}
+            >
+              {clearing ? 'Clearing…' : clearConfirm ? 'Confirm — delete all data' : 'Clear Database'}
+            </button>
+          </div>
+        </section>
 
         {/* Run history */}
         <section>
