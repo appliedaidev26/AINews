@@ -101,6 +101,7 @@ jobs:
             DATABASE_URL=${{ secrets.DATABASE_URL }}
             DATABASE_URL_SYNC=${{ secrets.DATABASE_URL_SYNC }}
             GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+            GEMINI_MODEL=gemini-2.5-flash
             FIREBASE_PROJECT_ID=${{ vars.GCP_PROJECT_ID }}
             CORS_EXTRA_ORIGINS=${{ vars.CORS_EXTRA_ORIGINS }}
             ADMIN_API_KEY=${{ secrets.ADMIN_API_KEY }}
