@@ -15,6 +15,18 @@ const ROLE_LABELS: Record<string, string> = {
 
 const ROLE_ORDER = ['ml_engineer', 'engineering_leader', 'data_scientist', 'software_engineer', 'researcher']
 
+// A1: shared color helper — consistent with feed and trending strip
+function categoryClass(category: string | null): string {
+  if (!category) return 'category-badge'
+  const key = category.toLowerCase()
+  if (key.startsWith('research')) return 'category-badge-research'
+  if (key.startsWith('tools'))    return 'category-badge-tools'
+  if (key.startsWith('industry')) return 'category-badge-industry'
+  if (key.startsWith('policy'))   return 'category-badge-policy'
+  if (key.startsWith('tutorial')) return 'category-badge-tutorials'
+  return 'category-badge'
+}
+
 function AudienceBars({ scores }: { scores: Record<string, number> }) {
   const sorted = ROLE_ORDER.filter(r => scores[r] != null)
     .map(r => ({ role: r, score: scores[r] }))
@@ -45,13 +57,20 @@ function formatDate(iso: string | null): string {
   })
 }
 
+function formatShortDate(iso: string | null): string {
+  if (!iso) return ''
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+}
+
 export function ArticleDetail({ article }: Props) {
+  const topRelated = article.related_articles?.[0] ?? null
+
   return (
     <div className="max-w-2xl mx-auto">
-      {/* Meta row */}
+      {/* Meta row — A1: colored category badge */}
       <div className="flex items-center gap-2 text-xs text-gray-400 mb-3 flex-wrap">
         {article.category && (
-          <span className="category-badge">{article.category}</span>
+          <span className={categoryClass(article.category)}>{article.category}</span>
         )}
         <span>{article.source_name}</span>
         {article.engagement_signal > 0 && (
@@ -69,7 +88,7 @@ export function ArticleDetail({ article }: Props) {
         {article.title}
       </h1>
 
-      {/* Attribution */}
+      {/* Attribution — E1: raw URL removed */}
       <div className="flex items-center gap-3 text-xs text-gray-400 pb-4 mb-5 border-b border-gray-200">
         {article.author && (
           <span>by <span className="text-gray-600">{article.author}</span></span>
@@ -82,9 +101,6 @@ export function ArticleDetail({ article }: Props) {
         >
           Read original ↗
         </a>
-        <span className="text-gray-300 truncate max-w-xs hidden sm:block">
-          {article.original_url}
-        </span>
       </div>
 
       {/* Summary */}
@@ -156,29 +172,73 @@ export function ArticleDetail({ article }: Props) {
         </section>
       )}
 
-      {/* Related Articles */}
+      {/* Related Articles — B3: add colored badge, source, date */}
       {article.related_articles?.length > 0 && (
         <section>
           <div className="divider" />
           <p className="section-heading">Related</p>
-          <ul className="space-y-1.5">
+          <ul className="space-y-3">
             {article.related_articles.map((rel) => (
-              <li key={rel.id} className="flex items-baseline gap-2 text-sm">
-                <span className="text-gray-300 select-none flex-shrink-0">→</span>
-                <Link
-                  to={`/article/${rel.id}`}
-                  className="text-gray-800 hover:text-accent"
-                >
-                  {rel.title}
-                </Link>
-                {rel.category && (
-                  <span className="category-badge flex-shrink-0">{rel.category}</span>
-                )}
+              <li key={rel.id} className="flex items-start gap-2">
+                <span className="text-gray-300 select-none flex-shrink-0 mt-0.5">→</span>
+                <div>
+                  <Link
+                    to={`/article/${rel.id}`}
+                    className="text-sm text-gray-800 hover:text-accent leading-snug block"
+                  >
+                    {rel.title}
+                  </Link>
+                  <div className="flex items-center gap-1.5 mt-1">
+                    {rel.category && (
+                      <span className={categoryClass(rel.category)}>{rel.category}</span>
+                    )}
+                    <span className="text-xs text-gray-400">{rel.source_name}</span>
+                    {rel.digest_date && (
+                      <span className="text-xs text-gray-300">· {formatShortDate(rel.digest_date)}</span>
+                    )}
+                  </div>
+                </div>
               </li>
             ))}
           </ul>
         </section>
       )}
+
+      {/* D2: Up next card — top related article as a clear continue-reading CTA */}
+      {topRelated && (
+        <div className="mt-6">
+          <p className="section-heading mb-2">Up next</p>
+          <Link
+            to={`/article/${topRelated.id}`}
+            className="block border border-gray-200 rounded p-3 hover:border-indigo-300 transition-colors group"
+          >
+            <div className="flex items-center gap-1.5 mb-1.5">
+              {topRelated.category && (
+                <span className={categoryClass(topRelated.category)}>{topRelated.category}</span>
+              )}
+              <span className="text-xs text-gray-400">{topRelated.source_name}</span>
+              {topRelated.digest_date && (
+                <span className="text-xs text-gray-300">· {formatShortDate(topRelated.digest_date)}</span>
+              )}
+            </div>
+            <p className="text-sm font-medium text-gray-800 group-hover:text-indigo-600 leading-snug">
+              {topRelated.title}
+            </p>
+          </Link>
+        </div>
+      )}
+
+      {/* B2: Read original — repeated at the bottom after the user has read everything */}
+      <div className="mt-5 pt-4 border-t border-gray-100">
+        <a
+          href={article.original_url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-sm font-medium text-accent hover:text-accent-dark transition-colors"
+        >
+          Read original article ↗
+        </a>
+      </div>
     </div>
   )
 }
