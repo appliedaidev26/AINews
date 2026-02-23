@@ -14,6 +14,7 @@ const POLL_RUN_MS      = 3_000    // poll active run every 3s for progress
 const POLL_COVERAGE_MS = 60_000   // refresh coverage every 60s
 
 const STAGE_LABELS: Record<PipelineStage, string> = {
+  queued:    'Queued — waiting to start…',
   fetching:  'Fetching articles from HN, Reddit, Arxiv, RSS…',
   filtering: 'Filtering already-seen articles…',
   deduping:  'Deduplicating similar articles…',
@@ -462,6 +463,116 @@ function CoveragePanel({ adminKey }: { adminKey: string }) {
   )
 }
 
+const ALL_SOURCE_KEYS = ['hn', 'reddit', 'arxiv', 'rss'] as const
+const SOURCE_DISPLAY: Record<string, string> = {
+  hn: 'Hacker News', reddit: 'Reddit', arxiv: 'Arxiv', rss: 'RSS/Blogs',
+}
+
+function RunDetailPanel({ run, feeds }: { run: PipelineRun; feeds: RssFeed[] }) {
+  // Sources metadata lives in progress (set at creation) and is also copied to result on success.
+  // progress is the authoritative source since it survives failed/cancelled runs too.
+  const p = run.progress ?? {}
+  const r = run.result ?? {}
+
+  const sourcesUsed: string[] = p.sources_used ?? (r as { sources_used?: string[] }).sources_used ?? []
+  const rssIdsUsed: number[] | null = p.rss_feed_ids_used !== undefined
+    ? p.rss_feed_ids_used
+    : ((r as { rss_feed_ids_used?: number[] | null }).rss_feed_ids_used ?? null)
+  const rssFeedNamesUsed: Record<string, string> | null = p.rss_feed_names_used ?? null
+
+  function rssFeedsLabel(): string {
+    if (!sourcesUsed.includes('rss')) return ''
+    if (rssIdsUsed === null) return 'all active feeds'
+    if (rssIdsUsed.length === 0) return 'none'
+    if (rssFeedNamesUsed) {
+      const names = rssIdsUsed.map(id => rssFeedNamesUsed[String(id)] ?? `Feed #${id}`)
+      return names.length <= 4
+        ? names.join(', ')
+        : `${names.slice(0, 4).join(', ')} +${names.length - 4} more`
+    }
+    // Fallback: look up from feeds list (for older runs without denormalized names)
+    const feedMap = Object.fromEntries(feeds.map(f => [f.id, f.name]))
+    const names = rssIdsUsed.map(id => feedMap[id] ?? `Feed #${id}`)
+    return names.length <= 4
+      ? names.join(', ')
+      : `${names.slice(0, 4).join(', ')} +${names.length - 4} more`
+  }
+
+  const hasSourcesMeta = sourcesUsed.length > 0
+
+  return (
+    <div className="px-4 py-4 bg-gray-50 space-y-4">
+
+      {/* Sources Used */}
+      <div>
+        <p className="text-xs font-medium text-gray-500 mb-1.5">Sources</p>
+        {hasSourcesMeta ? (
+          <>
+            <div className="flex flex-wrap gap-1.5">
+              {ALL_SOURCE_KEYS.map(src => {
+                const active = sourcesUsed.includes(src)
+                return (
+                  <span key={src} className={`text-xs px-2 py-0.5 rounded border font-medium ${
+                    active
+                      ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                      : 'bg-gray-100 text-gray-400 border-gray-200 line-through'
+                  }`}>
+                    {SOURCE_DISPLAY[src]}
+                  </span>
+                )
+              })}
+            </div>
+            {sourcesUsed.includes('rss') && rssFeedsLabel() && (
+              <p className="text-xs text-gray-400 mt-1.5">
+                <span className="text-gray-500">Feeds:</span> {rssFeedsLabel()}
+              </p>
+            )}
+          </>
+        ) : (
+          <p className="text-xs text-gray-400 italic">Not recorded (run predates this feature)</p>
+        )}
+      </div>
+
+      {/* Stats */}
+      {(run.status === 'success' || (run.result.fetched != null)) && (
+        <div>
+          <p className="text-xs font-medium text-gray-500 mb-1.5">Results</p>
+          <div className="flex gap-6">
+            {(['fetched', 'new', 'saved', 'enriched'] as const).map(k => (
+              <div key={k} className="text-center">
+                <p className="text-base font-semibold text-gray-900">{run.result[k] ?? '—'}</p>
+                <p className="text-xs text-gray-400 capitalize">{k}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Live progress for running runs */}
+      {run.status === 'running' && <ProgressPanel run={run} />}
+
+      {/* Timing */}
+      <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-gray-500">
+        <span>Started: <span className="text-gray-700">{formatDate(run.started_at)}</span></span>
+        {run.completed_at && (
+          <span>Completed: <span className="text-gray-700">{formatDate(run.completed_at)}</span></span>
+        )}
+        {run.duration_seconds !== null && (
+          <span>Duration: <span className="text-gray-700">{formatDuration(run.duration_seconds)}</span></span>
+        )}
+        <span>Triggered by: <span className="text-gray-700">{run.triggered_by}</span></span>
+      </div>
+
+      {/* Error */}
+      {run.error_message && (
+        <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2 font-mono break-all">
+          {run.error_message}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function Admin() {
   const [key, setKey] = useState<string>(() => localStorage.getItem(STORAGE_KEY) ?? '')
   const [keyInput, setKeyInput] = useState('')
@@ -486,6 +597,9 @@ export function Admin() {
   // RSS feed selection — loaded on auth; all selected by default
   const [feeds, setFeeds] = useState<RssFeed[]>([])
   const [selectedFeedIds, setSelectedFeedIds] = useState<Set<number>>(new Set())
+
+  // Run History expand state
+  const [expandedRunId, setExpandedRunId] = useState<number | null>(null)
 
   const runsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const runIntervalRef  = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -920,7 +1034,7 @@ export function Admin() {
               <table className="w-full text-xs text-gray-700">
                 <thead className="bg-gray-50 border-b border-gray-200">
                   <tr>
-                    {['#', 'Status', 'Date range', 'Started', 'Duration', 'Fetched', 'New', 'Saved', 'Enriched', 'By'].map(h => (
+                    {['', '#', 'Status', 'Date range', 'Started', 'Duration', 'Fetched', 'New', 'Saved', 'Enriched'].map(h => (
                       <th key={h} className="text-left px-3 py-2 font-medium text-gray-500 whitespace-nowrap">{h}</th>
                     ))}
                   </tr>
@@ -928,7 +1042,7 @@ export function Admin() {
                 <tbody>
                   {runs.map((run, i) => {
                     const isLast = i === runs.length - 1
-                    const hasFailed = run.status === 'failed' && run.error_message
+                    const isExpanded = expandedRunId === run.id
                     const dateFrom = run.target_date
                     const dateTo   = run.date_to
                                   ?? run.progress?.date_to
@@ -940,7 +1054,12 @@ export function Admin() {
                       : null
                     return (
                       <>
-                        <tr key={run.id} className={`border-b ${isLast ? 'border-transparent' : 'border-gray-100'} hover:bg-gray-50`}>
+                        <tr
+                          key={run.id}
+                          onClick={() => setExpandedRunId(prev => prev === run.id ? null : run.id)}
+                          className={`border-b ${isLast && !isExpanded ? 'border-transparent' : 'border-gray-100'} hover:bg-gray-50 cursor-pointer select-none`}
+                        >
+                          <td className="pl-3 pr-1 py-2 text-gray-300 text-xs">{isExpanded ? '▼' : '▶'}</td>
                           <td className="px-3 py-2 text-gray-400">{run.id}</td>
                           <td className="px-3 py-2 whitespace-nowrap"><StatusBadge status={run.status} /></td>
                           <td className="px-3 py-2 whitespace-nowrap">
@@ -959,13 +1078,11 @@ export function Admin() {
                           <td className="px-3 py-2">{run.result.new ?? '—'}</td>
                           <td className="px-3 py-2">{run.result.saved ?? '—'}</td>
                           <td className="px-3 py-2">{run.result.enriched ?? '—'}</td>
-                          <td className="px-3 py-2 text-gray-400">{run.triggered_by}</td>
                         </tr>
-                        {hasFailed && (
-                          <tr key={`${run.id}-err`} className={`border-b ${isLast ? 'border-transparent' : 'border-gray-100'} bg-red-50`}>
-                            <td />
-                            <td colSpan={9} className="px-3 py-1.5 text-red-600 text-xs">
-                              Run #{run.id} error: {run.error_message}
+                        {isExpanded && (
+                          <tr key={`${run.id}-detail`} className={`border-b ${isLast ? 'border-transparent' : 'border-gray-100'}`}>
+                            <td colSpan={10}>
+                              <RunDetailPanel run={run} feeds={feeds} />
                             </td>
                           </tr>
                         )}

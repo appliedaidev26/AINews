@@ -26,14 +26,16 @@ def _update_progress(run_id, progress: dict):
     if run_id is None:
         return
     from sqlalchemy.orm import Session as _Session
-    from sqlalchemy import update as sa_update
     from backend.db import sync_engine
     from backend.db.models import PipelineRun
     with _Session(sync_engine) as session:
-        session.execute(
-            sa_update(PipelineRun).where(PipelineRun.id == run_id).values(progress=progress)
-        )
-        session.commit()
+        # Read-merge-write: merge new stage fields into the existing JSONB so that
+        # metadata written at run creation (sources_used, rss_feed_ids_used,
+        # rss_feed_names_used) is preserved across every stage-update call.
+        row = session.get(PipelineRun, run_id)
+        if row is not None:
+            row.progress = {**(row.progress or {}), **progress}
+            session.commit()
 
 
 def _update_run(run_id, status, result=None, error_message=None, duration_seconds=None):
@@ -249,6 +251,8 @@ async def run_pipeline(
             **totals,
             "date_from": str(effective_from),
             "date_to":   str(effective_to),
+            "sources_used": sorted(enabled_sources),
+            "rss_feed_ids_used": sorted(rss_feed_ids) if rss_feed_ids is not None else None,
         }
         _update_run(run_id, "success", result=result, duration_seconds=time.monotonic() - t0)
         return result

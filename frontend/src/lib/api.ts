@@ -128,8 +128,13 @@ export const api = {
 }
 
 // --- Admin types ---
-export interface PipelineRunResult { fetched: number; new: number; saved: number; enriched: number; date_from: string; date_to: string }
-export type PipelineStage = 'fetching' | 'filtering' | 'deduping' | 'saving' | 'enriching'
+export interface PipelineRunResult {
+  fetched: number; new: number; saved: number; enriched: number
+  date_from: string; date_to: string
+  sources_used?: string[]
+  rss_feed_ids_used?: number[] | null
+}
+export type PipelineStage = 'fetching' | 'filtering' | 'deduping' | 'saving' | 'enriching' | 'queued'
 export interface PipelineProgress {
   stage: PipelineStage
   fetched?: number
@@ -143,6 +148,10 @@ export interface PipelineProgress {
   dates_total?: number
   date_from?: string
   date_to?: string
+  // Sources metadata — written at run creation, always present
+  sources_used?: string[]
+  rss_feed_ids_used?: number[] | null
+  rss_feed_names_used?: Record<string, string> | null  // keyed by feed id (string from JSON)
 }
 export interface PipelineRun {
   id: number

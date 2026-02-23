@@ -51,12 +51,30 @@ async def trigger_ingest(
     if rss_feed_ids.strip():
         parsed_feed_ids = {int(i) for i in rss_feed_ids.split(",") if i.strip().isdigit()}
 
+    # Resolve feed names now (denormalized) so the detail panel can display them
+    # even if feeds are later renamed or deleted.
+    rss_feed_names_used: Optional[dict] = None
+    if "rss" in enabled_sources:
+        feed_q = select(RssFeed.id, RssFeed.name)
+        if parsed_feed_ids is not None:
+            feed_q = feed_q.where(RssFeed.id.in_(parsed_feed_ids))
+        else:
+            feed_q = feed_q.where(RssFeed.is_active == True)  # noqa: E712
+        feed_rows = (await db.execute(feed_q)).all()
+        rss_feed_names_used = {row.id: row.name for row in feed_rows}
+
     run = PipelineRun(
         started_at=datetime.now(timezone.utc),
         status="running",
         target_date=str(effective_from),
         date_to=str(effective_to),
         triggered_by=triggered_by,
+        progress={
+            "stage": "queued",
+            "sources_used": sorted(enabled_sources),
+            "rss_feed_ids_used": sorted(parsed_feed_ids) if parsed_feed_ids is not None else None,
+            "rss_feed_names_used": rss_feed_names_used,
+        },
     )
     db.add(run)
     await db.commit()
