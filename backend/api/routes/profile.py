@@ -5,7 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, func, cast, Date as SADate
+from sqlalchemy import select, and_, or_, func, cast, Date as SADate
 
 from backend.db import get_db
 from backend.db.models import Article, UserProfile, UserArticleScore
@@ -61,6 +61,7 @@ async def get_personalized_feed(
     category: Optional[str] = Query(None),
     tags: Optional[str] = Query(None, description="Comma-separated tags to filter by (any match)"),
     source_type: Optional[str] = Query(None, description="Comma-separated source types: hn,reddit,arxiv,rss"),
+    source_name: Optional[str] = Query(None, description="Comma-separated source names to filter by (e.g. 'OpenAI Blog,Anthropic Blog')"),
     date_from: Optional[date] = Query(None, description="Range start date (inclusive); defaults to 7 days ago"),
     date_to: Optional[date] = Query(None, description="Range end date (inclusive); defaults to today"),
     page: int = Query(1, ge=1),
@@ -102,10 +103,18 @@ async def get_personalized_feed(
         tag_list = [t.strip().lower() for t in tags.split(",") if t.strip()]
         if tag_list:
             stmt = stmt.where(Article.tags.overlap(tag_list))
-    if source_type:
-        src_list = [s.strip().lower() for s in source_type.split(",") if s.strip()]
-        if src_list:
-            stmt = stmt.where(Article.source_type.in_(src_list))
+    if source_type or source_name:
+        conditions = []
+        if source_type:
+            src_list = [s.strip().lower() for s in source_type.split(",") if s.strip()]
+            if src_list:
+                conditions.append(Article.source_type.in_(src_list))
+        if source_name:
+            name_list = [n.strip() for n in source_name.split(",") if n.strip()]
+            if name_list:
+                conditions.append(Article.source_name.in_(name_list))
+        if conditions:
+            stmt = stmt.where(or_(*conditions))
 
     results = await db.execute(stmt)
     rows = results.all()

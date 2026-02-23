@@ -83,7 +83,7 @@ export function Feed() {
   const { profile } = useUserProfile()
   const { user, signOut } = useAuth()
   const [articles, setArticles] = useState<Article[]>([])
-  const [filters, setFilters] = useState<SidebarFilters>({ category: '', topics: [], sources: [] })
+  const [filters, setFilters] = useState<SidebarFilters>({ category: '', topics: [], sources: [], blogs: [] })
   const [datePreset, setDatePreset] = useState<DatePreset>('week')
   const [rangeFrom, setRangeFrom] = useState<string | null>(MONTHS[0].value)
   const [rangeTo,   setRangeTo]   = useState<string | null>(MONTHS[0].value)
@@ -119,6 +119,7 @@ export function Feed() {
       try {
         const tagsParam = filters.topics.length > 0 ? filters.topics.join(',') : undefined
         const sourceParam = filters.sources.length > 0 ? filters.sources.join(',') : undefined
+        const sourceNameParam = filters.blogs.length > 0 ? filters.blogs.join(',') : undefined
         const dateRange = dateRangeForPreset(datePreset, rangeFrom, rangeTo)
 
         if (profile) {
@@ -126,6 +127,7 @@ export function Feed() {
             category: filters.category || undefined,
             tags: tagsParam,
             source_type: sourceParam,
+            source_name: sourceNameParam,
             ...dateRange,
             page,
           })
@@ -138,6 +140,7 @@ export function Feed() {
             category: filters.category || undefined,
             tags: tagsParam,
             source_type: sourceParam,
+            source_name: sourceNameParam,
             ...dateRange,
             page,
             per_page: PER_PAGE,
@@ -290,11 +293,11 @@ export function Feed() {
           {!loading && !error && articles.length === 0 && (
             <div className="py-12 text-center space-y-1">
               <p className="text-sm text-gray-500">No articles to show.</p>
-              {(filters.category || filters.topics.length > 0 || filters.sources.length > 0) ? (
+              {(filters.category || filters.topics.length > 0 || filters.sources.length > 0 || filters.blogs.length > 0) ? (
                 <p className="text-xs text-gray-400">
                   Try{' '}
                   <button
-                    onClick={() => setFilters({ category: '', topics: [], sources: [] })}
+                    onClick={() => setFilters({ category: '', topics: [], sources: [], blogs: [] })}
                     className="underline hover:text-gray-600"
                   >
                     clearing the filters

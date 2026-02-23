@@ -4,7 +4,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc, and_, func, cast, Float, Date as SADate
+from sqlalchemy import select, desc, and_, or_, func, cast, Float, Date as SADate
 
 from backend.db import get_db
 from backend.db.models import Article
@@ -20,6 +20,7 @@ async def list_articles(
     category: Optional[str] = Query(None),
     tags: Optional[str] = Query(None, description="Comma-separated tags to filter by (any match)"),
     source_type: Optional[str] = Query(None, description="Comma-separated source types: hn,reddit,arxiv,rss"),
+    source_name: Optional[str] = Query(None, description="Comma-separated source names to filter by (e.g. 'OpenAI Blog,Anthropic Blog')"),
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
@@ -40,10 +41,18 @@ async def list_articles(
         tag_list = [t.strip().lower() for t in tags.split(",") if t.strip()]
         if tag_list:
             stmt = stmt.where(Article.tags.overlap(tag_list))
-    if source_type:
-        src_list = [s.strip().lower() for s in source_type.split(",") if s.strip()]
-        if src_list:
-            stmt = stmt.where(Article.source_type.in_(src_list))
+    if source_type or source_name:
+        conditions = []
+        if source_type:
+            src_list = [s.strip().lower() for s in source_type.split(",") if s.strip()]
+            if src_list:
+                conditions.append(Article.source_type.in_(src_list))
+        if source_name:
+            name_list = [n.strip() for n in source_name.split(",") if n.strip()]
+            if name_list:
+                conditions.append(Article.source_name.in_(name_list))
+        if conditions:
+            stmt = stmt.where(or_(*conditions))
 
     stmt = stmt.order_by(desc(Article.engagement_signal), desc(Article.published_at))
     stmt = stmt.offset((page - 1) * per_page).limit(per_page)

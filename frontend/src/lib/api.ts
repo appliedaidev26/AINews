@@ -103,7 +103,7 @@ async function authPost<T>(path: string, body: unknown): Promise<T> {
 }
 
 export const api = {
-  getArticles: (params?: { digest_date?: string; date_from?: string; date_to?: string; category?: string; tags?: string; source_type?: string; page?: number; per_page?: number }) =>
+  getArticles: (params?: { digest_date?: string; date_from?: string; date_to?: string; category?: string; tags?: string; source_type?: string; source_name?: string; page?: number; per_page?: number }) =>
     get<{ articles: Article[]; page: number; per_page: number }>('/articles', params as Record<string, string | number>),
 
   getArticle: (id: number) => get<ArticleDetail>(`/articles/${id}`),
@@ -120,7 +120,7 @@ export const api = {
   saveProfile: (profile: Omit<UserProfile, 'session_id'>) =>
     authPost<UserProfile>('/profile', profile),
 
-  getPersonalizedFeed: (params?: { category?: string; tags?: string; source_type?: string; date_from?: string; date_to?: string; page?: number }) =>
+  getPersonalizedFeed: (params?: { category?: string; tags?: string; source_type?: string; source_name?: string; date_from?: string; date_to?: string; page?: number }) =>
     authGet<FeedResponse>('/profile/feed', params as Record<string, string | number>),
 }
 

@@ -17,13 +17,26 @@ const SOURCES = [
   { value: 'hn', label: 'Hacker News' },
   { value: 'reddit', label: 'Reddit' },
   { value: 'arxiv', label: 'Arxiv' },
-  { value: 'rss', label: 'Blogs & RSS' },
+]
+
+const BLOGS = [
+  'OpenAI Blog',
+  'Anthropic Blog',
+  'Google DeepMind',
+  'HuggingFace Blog',
+  'Google AI Blog',
+  'Meta AI Blog',
+  'The Gradient',
+  'Import AI',
+  'Simon Willison',
+  'Towards Data Science',
 ]
 
 export interface SidebarFilters {
   category: string
   topics: string[]
   sources: string[]
+  blogs: string[]
 }
 
 interface Props {
@@ -49,14 +62,24 @@ export function Sidebar({ filters, onChange }: Props) {
     onChange({ ...filters, sources })
   }
 
+  const toggleBlog = (blog: string) => {
+    const blogs = filters.blogs.includes(blog)
+      ? filters.blogs.filter((b) => b !== blog)
+      : [...filters.blogs, blog]
+    onChange({ ...filters, blogs })
+  }
+
   const hasActiveFilters =
-    filters.category !== '' || filters.topics.length > 0 || filters.sources.length > 0
+    filters.category !== '' ||
+    filters.topics.length > 0 ||
+    filters.sources.length > 0 ||
+    filters.blogs.length > 0
 
   return (
     <aside className="w-44 flex-shrink-0 pr-6">
       {hasActiveFilters && (
         <button
-          onClick={() => onChange({ category: '', topics: [], sources: [] })}
+          onClick={() => onChange({ category: '', topics: [], sources: [], blogs: [] })}
           className="text-xs text-accent hover:text-accent-dark mb-4 block"
         >
           ✕ Clear filters
@@ -131,6 +154,31 @@ export function Sidebar({ filters, onChange }: Props) {
                   />
                   <span className={`text-xs transition-colors ${active ? 'text-gray-900 font-medium' : 'text-gray-500 group-hover:text-gray-800'}`}>
                     {src.label}
+                  </span>
+                </label>
+              </li>
+            )
+          })}
+        </ul>
+      </div>
+
+      {/* Blogs */}
+      <div className="mb-6">
+        <div className="section-heading">Blogs</div>
+        <ul className="space-y-1.5">
+          {BLOGS.map((blog) => {
+            const active = filters.blogs.includes(blog)
+            return (
+              <li key={blog}>
+                <label className="flex items-center gap-1.5 cursor-pointer group">
+                  <input
+                    type="checkbox"
+                    checked={active}
+                    onChange={() => toggleBlog(blog)}
+                    className="accent-blue-600 w-3 h-3 flex-shrink-0"
+                  />
+                  <span className={`text-xs transition-colors ${active ? 'text-gray-900 font-medium' : 'text-gray-500 group-hover:text-gray-800'}`}>
+                    {blog}
                   </span>
                 </label>
               </li>
