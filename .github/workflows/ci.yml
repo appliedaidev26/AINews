@@ -124,3 +124,17 @@ jobs:
           firebaseServiceAccount: ${{ secrets.FIREBASE_SA_KEY }}
           projectId: ${{ vars.GCP_PROJECT_ID }}
           channelId: live
+
+      # ── Post-deploy smoke test ─────────────────────────────────
+      - name: Set up Python for smoke test
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install smoke test deps
+        run: pip install requests
+      - name: Run post-deploy smoke test
+        run: |
+          python scripts/smoke_test_prod.py \
+            --url ${{ secrets.CLOUD_RUN_URL }} \
+            --admin-key ${{ secrets.ADMIN_API_KEY }} \
+            --timeout 180

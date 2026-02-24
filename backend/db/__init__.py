@@ -39,6 +39,21 @@ async def create_tables():
                 "ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS date_to VARCHAR(20)"
             )
         )
+        await conn.execute(
+            __import__("sqlalchemy").text(
+                "ALTER TABLE articles ADD COLUMN IF NOT EXISTS is_vectorized INTEGER DEFAULT 0"
+            )
+        )
+        await conn.execute(
+            __import__("sqlalchemy").text(
+                "ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS total_tasks INTEGER"
+            )
+        )
+        await conn.execute(
+            __import__("sqlalchemy").text(
+                "ALTER TABLE articles ADD COLUMN IF NOT EXISTS enrich_retries INTEGER DEFAULT 0"
+            )
+        )
     await _seed_rss_feeds()
 
 

@@ -39,7 +39,9 @@ class Article(Base):
     engagement_signal = Column(Integer, default=0)
     dedup_hash = Column(String(64), unique=True, index=True)
     # Enrichment state
-    is_enriched = Column(Integer, default=0)  # 0=pending, 1=done, -1=failed
+    is_enriched = Column(Integer, default=0)    # 0=pending, 1=done, -1=failed
+    is_vectorized = Column(Integer, default=0)  # 0=pending, 1=done, -1=failed
+    enrich_retries = Column(Integer, default=0) # incremented by scrub-orphans each time -1 is reset to 0
 
     __table_args__ = (
         Index("ix_articles_digest_category", "digest_date", "category"),
@@ -67,6 +69,7 @@ class Article(Base):
             "related_article_ids": self.related_article_ids or [],
             "engagement_signal": self.engagement_signal or 0,
             "is_enriched": self.is_enriched,
+            "is_vectorized": self.is_vectorized,
         }
 
 
@@ -118,14 +121,17 @@ class PipelineRun(Base):
     id               = Column(Integer, primary_key=True, index=True)
     started_at       = Column(DateTime(timezone=True), nullable=False)
     completed_at     = Column(DateTime(timezone=True), nullable=True)
-    status           = Column(String(20), nullable=False, default="running", index=True)  # running|success|failed|cancelled
+    status           = Column(String(20), nullable=False, default="running", index=True)  # queued|running|success|partial|failed|cancelled
     target_date      = Column(String(20), nullable=False)   # date_from (ISO string) — kept for compat
     date_to          = Column(String(20), nullable=True)    # null → single-date run; set → range run
     triggered_by     = Column(String(50), nullable=False, default="api")
+    total_tasks      = Column(Integer, nullable=True)       # N_sources × N_dates (Cloud Tasks mode)
     result           = Column(JSONB, nullable=True)   # {"fetched","new","saved","enriched","date_from","date_to"}
-    progress         = Column(JSONB, nullable=True)   # {"stage","fetched","new","saved","enriched","total_to_enrich","current_date","dates_completed","dates_total"}
+    progress         = Column(JSONB, nullable=True)   # legacy: {"stage","fetched","new","saved","enriched",...}
     error_message    = Column(Text, nullable=True)
     duration_seconds = Column(Float, nullable=True)
+
+    task_runs = relationship("PipelineTaskRun", back_populates="pipeline_run", cascade="all, delete-orphan")
 
     def to_dict(self):
         return {
@@ -136,10 +142,43 @@ class PipelineRun(Base):
             "target_date":      self.target_date,
             "date_to":          self.date_to,
             "triggered_by":     self.triggered_by,
+            "total_tasks":      self.total_tasks,
             "result":           self.result or {},
             "progress":         self.progress or {},
             "error_message":    self.error_message,
             "duration_seconds": self.duration_seconds,
+        }
+
+
+class PipelineTaskRun(Base):
+    """Tracks each (source, date) task within a Cloud Tasks-based PipelineRun."""
+    __tablename__ = "pipeline_task_runs"
+
+    id             = Column(Integer, primary_key=True, index=True)
+    run_id         = Column(Integer, ForeignKey("pipeline_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    source         = Column(String(50), nullable=False)   # "hn", "reddit", "arxiv", "rss"
+    date           = Column(Date, nullable=False)
+    status         = Column(String(20), nullable=False, default="pending", index=True)  # pending|running|success|failed|cancelled
+    articles_saved = Column(Integer, nullable=True)
+    error_message  = Column(Text, nullable=True)
+    updated_at     = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now())
+
+    pipeline_run = relationship("PipelineRun", back_populates="task_runs")
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "source", "date", name="uq_task_run_source_date"),
+    )
+
+    def to_dict(self):
+        return {
+            "id":             self.id,
+            "run_id":         self.run_id,
+            "source":         self.source,
+            "date":           str(self.date),
+            "status":         self.status,
+            "articles_saved": self.articles_saved,
+            "error_message":  self.error_message,
+            "updated_at":     self.updated_at.isoformat() if self.updated_at else None,
         }
 
 
