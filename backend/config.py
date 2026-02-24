@@ -53,6 +53,16 @@ class Settings(BaseSettings):
     # Admin
     admin_api_key: str = ""  # set ADMIN_API_KEY env var; empty = endpoint disabled
 
+    # GCP / Cloud Tasks / Pub/Sub / Vertex AI
+    gcp_project_id: str = ""
+    vertex_ai_location: str = "us-central1"
+    vertex_ai_index_id: str = ""           # Vertex AI Vector Search index resource ID
+    vertex_ai_index_endpoint_id: str = ""  # Vertex AI Vector Search index endpoint resource ID
+    cloud_tasks_region: str = "us-central1"
+    pubsub_topic: str = "ainews.articles.saved"
+    cloud_run_url: str = ""                # e.g. https://ainews-api-xxx.run.app
+    cloud_run_sa_email: str = ""           # service account for OIDC token on Cloud Tasks
+
     # Env
     environment: str = "development"
 

@@ -3,10 +3,10 @@ services:
     image: postgres:15-alpine
     environment:
       POSTGRES_USER: ainews
-      POSTGRES_PASSWORD: ainews
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ainews}
       POSTGRES_DB: ainews
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -22,8 +22,8 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql+asyncpg://ainews:ainews@db:5432/ainews
-      DATABASE_URL_SYNC: postgresql://ainews:ainews@db:5432/ainews
+      DATABASE_URL: postgresql+asyncpg://ainews:${POSTGRES_PASSWORD:-ainews}@db:5432/ainews
+      DATABASE_URL_SYNC: postgresql://ainews:${POSTGRES_PASSWORD:-ainews}@db:5432/ainews
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
       REDDIT_CLIENT_ID: ${REDDIT_CLIENT_ID:-}

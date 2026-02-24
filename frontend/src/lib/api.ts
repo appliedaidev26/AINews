@@ -135,7 +135,9 @@ export interface PipelineRunResult {
   rss_feed_ids_used?: number[] | null
 }
 export type PipelineStage = 'fetching' | 'filtering' | 'deduping' | 'saving' | 'enriching' | 'queued'
+export type RunType = 'ingestion' | 'backfill' | 'enrichment' | 'retry'
 export interface PipelineProgress {
+  run_type?: RunType
   stage: PipelineStage
   fetched?: number
   new?: number
@@ -157,16 +159,50 @@ export interface PipelineRun {
   id: number
   started_at: string
   completed_at: string | null
-  status: 'running' | 'success' | 'failed' | 'cancelled'
+  status: 'queued' | 'running' | 'success' | 'partial' | 'failed' | 'cancelled'
   target_date: string
   date_to: string | null
   triggered_by: string
+  total_tasks: number | null
   result: Partial<PipelineRunResult>
   progress: Partial<PipelineProgress>
   error_message: string | null
   duration_seconds: number | null
 }
 export interface RunsResponse { runs: PipelineRun[]; total: number }
+
+export interface PipelineTaskRun {
+  id: number
+  run_id: number
+  source: string
+  date: string
+  status: 'pending' | 'running' | 'success' | 'failed' | 'cancelled'
+  articles_saved: number | null
+  error_message: string | null
+  updated_at: string | null
+}
+
+export interface TasksResponse {
+  run: PipelineRun
+  tasks: PipelineTaskRun[]
+}
+
+export interface EnrichStatus {
+  total_saved: number
+  enriched: number
+  vectorized: number
+}
+
+export interface QueueRunResponse {
+  status: string
+  run_id: number
+  total_tasks: number
+  enqueued: number
+  failed_to_enqueue: number
+  date_from: string
+  date_to: string
+  sources: string[]
+}
 
 export interface CoverageDay {
   date: string; total: number; enriched: number; pending: number; failed: number
@@ -254,6 +290,12 @@ export const adminApi = {
     adminFetch<{ status: string; id: number }>('DELETE', `/admin/sources/rss/${id}`, key),
   clearDb: (key: string) =>
     adminFetch<{ status: string; deleted: { articles: number; pipeline_runs: number } }>('POST', '/admin/clear-db', key),
+  enrichPending: (key: string, params?: { date_from?: string; date_to?: string }) =>
+    adminFetch<{ status: string; run_id?: number; article_count: number }>(
+      'POST', '/admin/enrich-pending', key,
+      params && Object.keys(params).length ? params as Record<string, string> : {}
+    ),
+
   retryFailed: async (key: string, params?: { date_from?: string; date_to?: string }) => {
     const p = new URLSearchParams()
     if (params?.date_from) p.set('date_from', params.date_from)
@@ -267,4 +309,33 @@ export const adminApi = {
     if (!res.ok) throw new Error(await res.text())
     return res.json() as Promise<{ status: string; run_id?: number; article_count: number; date_from?: string; date_to?: string }>
   },
+
+  queueRun: (key: string, opts: {
+    dateFrom?: string
+    dateTo?: string
+    sources?: string
+    triggeredBy?: string
+  } = {}) =>
+    adminFetch<QueueRunResponse>('POST', '/admin/queue-run', key, {
+      ...(opts.dateFrom    ? { date_from:    opts.dateFrom    } : {}),
+      ...(opts.dateTo      ? { date_to:      opts.dateTo      } : {}),
+      ...(opts.sources     ? { sources:      opts.sources     } : {}),
+      ...(opts.triggeredBy ? { triggered_by: opts.triggeredBy } : {}),
+    }),
+
+  getRunTasks: (key: string, runId: number) =>
+    adminFetch<TasksResponse>('GET', `/admin/runs/${runId}/tasks`, key),
+
+  getRunEnrichStatus: (key: string, runId: number) =>
+    adminFetch<EnrichStatus>('GET', `/admin/runs/${runId}/enrich-status`, key),
+
+  retryRunTasks: (key: string, runId: number) =>
+    adminFetch<{ status: string; retried: number; total_failed: number }>(
+      'POST', `/admin/runs/${runId}/tasks/retry`, key
+    ),
+
+  retrySingleTask: (key: string, runId: number, source: string, taskDate: string) =>
+    adminFetch<{ status: string; run_id: number; source: string; date: string }>(
+      'POST', `/admin/runs/${runId}/tasks/${source}/${taskDate}/retry`, key
+    ),
 }

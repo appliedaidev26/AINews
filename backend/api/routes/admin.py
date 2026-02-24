@@ -1,5 +1,6 @@
 """Admin routes — pipeline trigger, run history, cancellation, coverage, and sources."""
 import asyncio
+import hmac
 import logging
 from datetime import date, datetime, timezone, timedelta
 from typing import Optional
@@ -8,13 +9,14 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc, text, delete, func
+from sqlalchemy import select, desc, text, delete, func, or_
 
 from backend.config import settings
 from backend.db import get_db
-from backend.db.models import Article, PipelineRun, RssFeed
+from backend.db.models import Article, PipelineRun, PipelineTaskRun, RssFeed
 from backend.ingestion.pipeline import run_pipeline
-from backend.processing.enricher import enrich_failed_articles
+from backend.ingestion.cloud_tasks import enqueue_fetch_task
+from backend.processing.enricher import enrich_failed_articles, enrich_pending_articles
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -25,7 +27,9 @@ _active_tasks: dict[int, asyncio.Task] = {}
 
 
 def require_admin(x_admin_key: str = Header(...)) -> str:
-    if not settings.admin_api_key or x_admin_key != settings.admin_api_key:
+    if not settings.admin_api_key:
+        raise HTTPException(status_code=403, detail="Admin disabled")
+    if not hmac.compare_digest(x_admin_key, settings.admin_api_key):
         raise HTTPException(status_code=403, detail="Invalid admin key")
     return x_admin_key
 
@@ -72,6 +76,7 @@ async def trigger_ingest(
         date_to=str(effective_to),
         triggered_by=triggered_by,
         progress={
+            "run_type": "ingestion",
             "stage": "queued",
             "sources_used": sorted(enabled_sources),
             "rss_feed_ids_used": sorted(parsed_feed_ids) if parsed_feed_ids is not None else None,
@@ -151,6 +156,7 @@ async def retry_failed_enrichments(
         status="running",
         triggered_by="retry_failed",
         progress={
+            "run_type": "retry",
             "stage": "enriching",
             "fetched": 0, "new": 0, "saved": 0, "enriched": 0,
             "total_to_enrich": article_count,
@@ -172,6 +178,58 @@ async def retry_failed_enrichments(
         "article_count": article_count,
         "date_from": str(effective_from),
         "date_to": str(effective_to),
+    }
+
+
+@router.post("/enrich-pending")
+async def enrich_pending(
+    date_from: Optional[date] = Query(None, description="Only enrich articles on or after this date"),
+    date_to:   Optional[date] = Query(None, description="Only enrich articles on or before this date"),
+    key: str = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Enrich all pending articles (is_enriched IS NULL or 0) in the optional date range."""
+    stmt = select(func.count(Article.id)).where(
+        or_(Article.is_enriched.is_(None), Article.is_enriched == 0)
+    )
+    if date_from:
+        stmt = stmt.where(Article.digest_date >= date_from)
+    if date_to:
+        stmt = stmt.where(Article.digest_date <= date_to)
+    article_count = (await db.execute(stmt)).scalar() or 0
+
+    if article_count == 0:
+        return {"status": "nothing_to_enrich", "article_count": 0}
+
+    run = PipelineRun(
+        started_at=datetime.now(timezone.utc),
+        status="running",
+        target_date=str(date_from or date.today()),
+        date_to=str(date_to or date.today()),
+        triggered_by="enrich_pending",
+        progress={
+            "run_type": "enrichment",
+            "stage": "enriching",
+            "fetched": 0, "new": 0, "saved": 0, "enriched": 0,
+            "total_to_enrich": article_count,
+        },
+    )
+    db.add(run)
+    await db.commit()
+    await db.refresh(run)
+
+    task = asyncio.create_task(
+        enrich_pending_articles(run_id=run.id, date_from=date_from, date_to=date_to)
+    )
+    _active_tasks[run.id] = task
+    task.add_done_callback(lambda _: _active_tasks.pop(run.id, None))
+
+    return {
+        "status": "started",
+        "run_id": run.id,
+        "article_count": article_count,
+        "date_from": str(date_from) if date_from else None,
+        "date_to": str(date_to) if date_to else None,
     }
 
 
@@ -359,6 +417,206 @@ async def update_rss_feed(
     await db.commit()
     await db.refresh(feed)
     return feed.to_dict()
+
+
+@router.post("/queue-run")
+async def queue_run(
+    date_from:    Optional[date] = Query(None, description="Range start (ISO date)"),
+    date_to:      Optional[date] = Query(None, description="Range end (ISO date)"),
+    triggered_by: str            = Query("api"),
+    sources:      str            = Query("hn,reddit,arxiv,rss", description="Comma-separated source types"),
+    key: str = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a PipelineRun and enqueue Cloud Tasks for each (source, date) combination."""
+    effective_from = date_from or date.today()
+    effective_to   = date_to or effective_from
+
+    enabled_sources = {s.strip().lower() for s in sources.split(",") if s.strip()}
+    if not enabled_sources:
+        enabled_sources = {"hn", "reddit", "arxiv", "rss"}
+
+    all_dates = [
+        effective_from + timedelta(days=i)
+        for i in range((effective_to - effective_from).days + 1)
+    ]
+    total_tasks = len(all_dates) * len(enabled_sources)
+
+    run = PipelineRun(
+        started_at=datetime.now(timezone.utc),
+        status="queued",
+        target_date=str(effective_from),
+        date_to=str(effective_to),
+        triggered_by=triggered_by,
+        total_tasks=total_tasks,
+        progress={"run_type": "backfill", "stage": "queued", "sources_used": sorted(enabled_sources)},
+    )
+    db.add(run)
+    await db.commit()
+    await db.refresh(run)
+
+    # Enqueue Cloud Tasks
+    enqueued = 0
+    failed = 0
+    for d in all_dates:
+        for src in sorted(enabled_sources):
+            ok = enqueue_fetch_task(run.id, src, d)
+            if ok:
+                enqueued += 1
+            else:
+                failed += 1
+
+    logger.info(
+        "queue-run: created run %s, enqueued %d tasks (%d failed) for %s → %s",
+        run.id, enqueued, failed, effective_from, effective_to,
+    )
+
+    return {
+        "status": "queued",
+        "run_id": run.id,
+        "total_tasks": total_tasks,
+        "enqueued": enqueued,
+        "failed_to_enqueue": failed,
+        "date_from": str(effective_from),
+        "date_to": str(effective_to),
+        "sources": sorted(enabled_sources),
+    }
+
+
+@router.get("/runs/{run_id}/tasks")
+async def get_run_tasks(
+    run_id: int,
+    key: str = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return all pipeline_task_runs rows for a run plus a run summary."""
+    run_result = await db.execute(select(PipelineRun).where(PipelineRun.id == run_id))
+    run = run_result.scalar_one_or_none()
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    tasks_result = await db.execute(
+        select(PipelineTaskRun)
+        .where(PipelineTaskRun.run_id == run_id)
+        .order_by(PipelineTaskRun.date, PipelineTaskRun.source)
+    )
+    tasks = tasks_result.scalars().all()
+
+    return {
+        "run": run.to_dict(),
+        "tasks": [t.to_dict() for t in tasks],
+    }
+
+
+@router.get("/runs/{run_id}/enrich-status")
+async def get_run_enrich_status(
+    run_id: int,
+    key: str = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return enrichment and vectorization counts for articles saved in this run.
+
+    We identify articles by joining pipeline_task_runs dates to articles.digest_date.
+    """
+    # Get date range for this run
+    run_result = await db.execute(select(PipelineRun).where(PipelineRun.id == run_id))
+    run = run_result.scalar_one_or_none()
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    from datetime import date as _date
+    date_from_obj = _date.fromisoformat(run.target_date)
+    date_to_obj   = _date.fromisoformat(run.date_to or run.target_date)
+
+    result = await db.execute(
+        text("""
+            SELECT
+                COUNT(*) AS total_saved,
+                COUNT(*) FILTER (WHERE is_enriched  = 1) AS enriched,
+                COUNT(*) FILTER (WHERE is_vectorized = 1) AS vectorized
+            FROM articles
+            WHERE digest_date BETWEEN :date_from AND :date_to
+        """),
+        {"date_from": date_from_obj, "date_to": date_to_obj},
+    )
+    row = result.mappings().one()
+    return {
+        "total_saved": row["total_saved"],
+        "enriched":    row["enriched"],
+        "vectorized":  row["vectorized"],
+    }
+
+
+@router.post("/runs/{run_id}/tasks/retry")
+async def retry_run_tasks(
+    run_id: int,
+    key: str = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Re-enqueue all failed tasks for a run."""
+    run_result = await db.execute(select(PipelineRun).where(PipelineRun.id == run_id))
+    run = run_result.scalar_one_or_none()
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    failed_tasks_result = await db.execute(
+        select(PipelineTaskRun).where(
+            PipelineTaskRun.run_id == run_id,
+            PipelineTaskRun.status == "failed",
+        )
+    )
+    failed_tasks = failed_tasks_result.scalars().all()
+
+    if not failed_tasks:
+        return {"status": "nothing_to_retry", "retried": 0}
+
+    enqueued = 0
+    for task in failed_tasks:
+        task.status = "pending"
+        ok = enqueue_fetch_task(run_id, task.source, task.date)
+        if ok:
+            enqueued += 1
+
+    await db.commit()
+    return {"status": "ok", "retried": enqueued, "total_failed": len(failed_tasks)}
+
+
+@router.post("/runs/{run_id}/tasks/{source}/{task_date}/retry")
+async def retry_single_task(
+    run_id: int,
+    source: str,
+    task_date: str,
+    key: str = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Re-enqueue a single failed task for a specific (source, date)."""
+    try:
+        parsed_date = date.fromisoformat(task_date)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Invalid date: {task_date}")
+
+    task_result = await db.execute(
+        select(PipelineTaskRun).where(
+            PipelineTaskRun.run_id == run_id,
+            PipelineTaskRun.source == source,
+            PipelineTaskRun.date == parsed_date,
+        )
+    )
+    task = task_result.scalar_one_or_none()
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    task.status = "pending"
+    task.error_message = None
+    await db.commit()
+
+    ok = enqueue_fetch_task(run_id, source, parsed_date)
+    return {
+        "status": "enqueued" if ok else "enqueue_failed",
+        "run_id": run_id,
+        "source": source,
+        "date": task_date,
+    }
 
 
 @router.post("/clear-db")

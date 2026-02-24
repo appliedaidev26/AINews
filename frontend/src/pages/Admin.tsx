@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
-import { Link } from 'react-router-dom'
-import { adminApi, type PipelineRun, type PipelineStage, type CoverageDay, type RssFeed, type SourcesResponse } from '../lib/api'
+import { Link, useNavigate } from 'react-router-dom'
+import { adminApi, type PipelineRun, type PipelineStage, type RunType, type CoverageDay, type RssFeed, type SourcesResponse } from '../lib/api'
 
 const STORAGE_KEY = 'ainews_admin_key'
 
@@ -42,18 +42,51 @@ function isoDate(offsetDays = 0): string {
   return d.toISOString().slice(0, 10)
 }
 
+function getRunType(run: PipelineRun): RunType {
+  if (run.progress?.run_type) return run.progress.run_type
+  // Fallback for older runs without run_type in progress
+  if (run.triggered_by === 'retry_failed') return 'retry'
+  if (run.triggered_by === 'enrich_pending') return 'enrichment'
+  return 'ingestion'
+}
+
+const RUN_TYPE_LABELS: Record<RunType, string> = {
+  ingestion:  'Ingestion',
+  backfill:   'Backfill',
+  enrichment: 'Enrichment',
+  retry:      'Retry',
+}
+
+const RUN_TYPE_CLASSES: Record<RunType, string> = {
+  ingestion:  'bg-teal-50 text-teal-700 border-teal-200',
+  backfill:   'bg-indigo-50 text-indigo-700 border-indigo-200',
+  enrichment: 'bg-purple-50 text-purple-700 border-purple-200',
+  retry:      'bg-orange-50 text-orange-700 border-orange-200',
+}
+
+function RunTypeBadge({ run }: { run: PipelineRun }) {
+  const type = getRunType(run)
+  return (
+    <span className={`category-badge ${RUN_TYPE_CLASSES[type]}`}>
+      {RUN_TYPE_LABELS[type]}
+    </span>
+  )
+}
+
 function StatusBadge({ status }: { status: PipelineRun['status'] }) {
   const classes: Record<string, string> = {
+    queued:    'category-badge bg-yellow-50 text-yellow-700 border-yellow-200',
     running:   'category-badge bg-blue-50 text-blue-700 border-blue-200',
     success:   'category-badge bg-green-50 text-green-700 border-green-200',
+    partial:   'category-badge bg-orange-50 text-orange-700 border-orange-200',
     failed:    'category-badge bg-red-50 text-red-700 border-red-200',
     cancelled: 'category-badge bg-gray-50 text-gray-500 border-gray-200',
   }
   const icons: Record<string, string> = {
-    running: '●', success: '✓', failed: '✗', cancelled: '○',
+    queued: '⏳', running: '●', success: '✓', partial: '⚠', failed: '✗', cancelled: '○',
   }
   return (
-    <span className={`${classes[status] ?? 'category-badge'} ${status === 'running' ? 'animate-pulse' : ''}`}>
+    <span className={`${classes[status] ?? 'category-badge'} ${status === 'running' || status === 'queued' ? 'animate-pulse' : ''}`}>
       {icons[status] ?? '?'} {status}
     </span>
   )
@@ -591,6 +624,7 @@ function RunDetailPanel({ run, feeds }: { run: PipelineRun; feeds: RssFeed[] }) 
 }
 
 export function Admin() {
+  const navigate = useNavigate()
   const [key, setKey] = useState<string>(() => localStorage.getItem(STORAGE_KEY) ?? '')
   const [keyInput, setKeyInput] = useState('')
   const [keyError, setKeyError] = useState('')
@@ -617,6 +651,12 @@ export function Admin() {
 
   // Populate Trending — also fetch last 2 days of HN+Reddit
   const [populateTrending, setPopulateTrending] = useState(false)
+
+  // Enrich Pending state
+  const [enrichFrom, setEnrichFrom] = useState('')
+  const [enrichTo,   setEnrichTo]   = useState('')
+  const [enriching,  setEnriching]  = useState(false)
+  const [enrichResult, setEnrichResult] = useState<{ run_id: number; article_count: number } | null>(null)
 
   // Run History expand state
   const [expandedRunId, setExpandedRunId] = useState<number | null>(null)
@@ -748,20 +788,14 @@ export function Admin() {
       const sourcesList: string[] = ALL_SOURCES.filter(s => selectedSources.has(s))
       if (selectedFeedIds.size > 0) sourcesList.push('rss')
 
-      // Only send explicit feed IDs if it's a subset; omit (= undefined) to mean "all active feeds"
-      const rssFeedIds = selectedFeedIds.size > 0 && selectedFeedIds.size < feeds.length
-        ? [...selectedFeedIds].join(',')
-        : undefined
-
-      await adminApi.triggerIngest(key, {
+      const result = await adminApi.queueRun(key, {
         triggeredBy: 'api',
         dateFrom,
         dateTo,
         sources: sourcesList.join(','),
-        rssFeedIds,
-        populateTrending,
       })
       await fetchRuns(key)
+      navigate(`/admin/backfill/${result.run_id}`)
     } catch (err) {
       if (err instanceof Error && err.message === 'ADMIN_FORBIDDEN') { clearKey(); return }
       setError(err instanceof Error ? err.message : 'Trigger failed')
@@ -798,6 +832,29 @@ export function Admin() {
     } catch (err) {
       if (err instanceof Error && err.message === 'ADMIN_FORBIDDEN') { clearKey(); return }
       setError(err instanceof Error ? err.message : 'Retry failed')
+    }
+  }
+
+  async function handleEnrichPending() {
+    setEnriching(true)
+    setEnrichResult(null)
+    setError(null)
+    try {
+      const params: { date_from?: string; date_to?: string } = {}
+      if (enrichFrom) params.date_from = enrichFrom
+      if (enrichTo)   params.date_to   = enrichTo
+      const res = await adminApi.enrichPending(key, params)
+      if (res.status === 'nothing_to_enrich') {
+        setError('No pending articles found to enrich.')
+        return
+      }
+      setEnrichResult({ run_id: res.run_id!, article_count: res.article_count })
+      await fetchRuns(key)
+    } catch (err) {
+      if (err instanceof Error && err.message === 'ADMIN_FORBIDDEN') { clearKey(); return }
+      setError(err instanceof Error ? err.message : 'Enrichment trigger failed')
+    } finally {
+      setEnriching(false)
     }
   }
 
@@ -1020,6 +1077,51 @@ export function Admin() {
           </section>
         )}
 
+        {/* Enrich Pending */}
+        <section className="space-y-3">
+          <p className="section-heading">Enrich Pending</p>
+          <p className="text-xs text-gray-500">
+            Run Gemini enrichment for articles that are pending or have never been processed.
+            Leave dates empty to process all pending articles across all dates.
+          </p>
+          <div className="flex flex-wrap items-end gap-3">
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">From (optional)</label>
+              <input
+                type="date"
+                value={enrichFrom}
+                max={isoDate(0)}
+                onChange={e => setEnrichFrom(e.target.value)}
+                disabled={enriching}
+                className="border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:border-indigo-500 disabled:opacity-50"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">To (optional)</label>
+              <input
+                type="date"
+                value={enrichTo}
+                max={isoDate(0)}
+                onChange={e => setEnrichTo(e.target.value)}
+                disabled={enriching}
+                className="border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:border-indigo-500 disabled:opacity-50"
+              />
+            </div>
+            <button
+              onClick={handleEnrichPending}
+              disabled={enriching}
+              className="bg-indigo-600 text-white text-sm px-4 py-2 rounded hover:bg-indigo-700 disabled:opacity-50"
+            >
+              {enriching ? 'Starting…' : 'Enrich Pending'}
+            </button>
+          </div>
+          {enrichResult && (
+            <p className="text-xs text-green-700">
+              Started — Run #{enrichResult.run_id}, {enrichResult.article_count} articles queued. Check Run History for progress.
+            </p>
+          )}
+        </section>
+
         {/* Last run summary */}
         {latestSuccess && latestSuccess !== activeRun && (
           <section>
@@ -1082,7 +1184,7 @@ export function Admin() {
               <table className="w-full text-xs text-gray-700">
                 <thead className="bg-gray-50 border-b border-gray-200">
                   <tr>
-                    {['', '#', 'Status', 'Date range', 'Started', 'Duration', 'Fetched', 'New', 'Saved', 'Enriched'].map(h => (
+                    {['', '#', 'Type', 'Status', 'Date range', 'Started', 'Duration', 'Tasks', 'Fetched', 'New', 'Saved', 'Enriched', ''].map(h => (
                       <th key={h} className="text-left px-3 py-2 font-medium text-gray-500 whitespace-nowrap">{h}</th>
                     ))}
                   </tr>
@@ -1109,6 +1211,7 @@ export function Admin() {
                         >
                           <td className="pl-3 pr-1 py-2 text-gray-300 text-xs">{isExpanded ? '▼' : '▶'}</td>
                           <td className="px-3 py-2 text-gray-400">{run.id}</td>
+                          <td className="px-3 py-2 whitespace-nowrap"><RunTypeBadge run={run} /></td>
                           <td className="px-3 py-2 whitespace-nowrap"><StatusBadge status={run.status} /></td>
                           <td className="px-3 py-2 whitespace-nowrap">
                             <span className="font-mono">{dateFrom}</span>
@@ -1122,14 +1225,30 @@ export function Admin() {
                           </td>
                           <td className="px-3 py-2 whitespace-nowrap">{formatDate(run.started_at)}</td>
                           <td className="px-3 py-2 whitespace-nowrap">{formatDuration(run.duration_seconds)}</td>
+                          <td className="px-3 py-2">
+                            {run.total_tasks != null ? (
+                              <span className="text-gray-700">{run.total_tasks}</span>
+                            ) : '—'}
+                          </td>
                           <td className="px-3 py-2">{run.result.fetched ?? '—'}</td>
                           <td className="px-3 py-2">{run.result.new ?? '—'}</td>
                           <td className="px-3 py-2">{run.result.saved ?? '—'}</td>
                           <td className="px-3 py-2">{run.result.enriched ?? '—'}</td>
+                          <td className="px-3 py-2 whitespace-nowrap">
+                            {run.total_tasks != null && (
+                              <Link
+                                to={`/admin/backfill/${run.id}`}
+                                onClick={e => e.stopPropagation()}
+                                className="text-indigo-600 hover:underline text-xs"
+                              >
+                                detail →
+                              </Link>
+                            )}
+                          </td>
                         </tr>
                         {isExpanded && (
                           <tr key={`${run.id}-detail`} className={`border-b ${isLast ? 'border-transparent' : 'border-gray-100'}`}>
-                            <td colSpan={10}>
+                            <td colSpan={13}>
                               <RunDetailPanel run={run} feeds={feeds} />
                             </td>
                           </tr>

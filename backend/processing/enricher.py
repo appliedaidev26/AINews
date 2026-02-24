@@ -15,7 +15,7 @@ from tenacity import (
 import google.api_core.exceptions
 from requests.exceptions import SSLError as RequestsSSLError, ConnectionError as RequestsConnectionError
 from sqlalchemy.orm import Session
-from sqlalchemy import select, update
+from sqlalchemy import select, update, or_
 
 from backend.config import settings
 from backend.db import sync_engine
@@ -442,6 +442,34 @@ async def enrich_failed_articles(
 
     return await enrich_articles(
         saved_ids=failed_ids,
+        run_id=run_id,
+        running_totals={"fetched": 0, "new": 0, "saved": 0, "enriched": 0},
+    )
+
+
+async def enrich_pending_articles(
+    run_id: int,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+) -> int:
+    """Query all is_enriched IS NULL or = 0 articles and enrich them."""
+    with Session(sync_engine) as s:
+        stmt = select(Article.id).where(
+            or_(Article.is_enriched.is_(None), Article.is_enriched == 0)
+        )
+        if date_from:
+            stmt = stmt.where(Article.digest_date >= date_from)
+        if date_to:
+            stmt = stmt.where(Article.digest_date <= date_to)
+        pending_ids = list(s.scalars(stmt).all())
+
+    if not pending_ids:
+        logger.info("enrich_pending: no pending articles found")
+        return 0
+
+    logger.info(f"enrich_pending: enriching {len(pending_ids)} articles")
+    return await enrich_articles(
+        saved_ids=pending_ids,
         run_id=run_id,
         running_totals={"fetched": 0, "new": 0, "saved": 0, "enriched": 0},
     )
