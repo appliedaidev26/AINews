@@ -105,10 +105,22 @@ export function ArticleDetail({ article }: Props) {
         </a>
       </div>
 
-      {/* Summary */}
+      {/* Narrative Summary */}
+      {article.summary && (
+        <section className="mb-5">
+          <p className="section-heading">The Rundown</p>
+          <div className="text-sm text-gray-700 leading-relaxed space-y-3">
+            {article.summary.split('\n\n').filter(Boolean).map((para, i) => (
+              <p key={i}>{para}</p>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Quick Hits */}
       {article.summary_bullets?.length > 0 && (
         <section className="mb-5">
-          <p className="section-heading">Summary</p>
+          <p className="section-heading">Quick Hits</p>
           <ul className="space-y-1.5">
             {article.summary_bullets.map((bullet, i) => (
               <li key={i} className="flex gap-2.5 text-sm text-gray-700">

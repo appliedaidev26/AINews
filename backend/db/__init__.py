@@ -72,6 +72,11 @@ async def create_tables():
                 "ALTER TABLE articles ADD COLUMN IF NOT EXISTS enrich_retries INTEGER DEFAULT 0"
             )
         )
+        await conn.execute(
+            __import__("sqlalchemy").text(
+                "ALTER TABLE articles ADD COLUMN IF NOT EXISTS summary TEXT"
+            )
+        )
     await _seed_rss_feeds()
 
 

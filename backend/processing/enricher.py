@@ -32,7 +32,9 @@ def _get_rate_sem() -> asyncio.Semaphore:
         _rate_sem = asyncio.Semaphore(5)
     return _rate_sem
 
-ENRICHMENT_PROMPT = """You are an expert AI/ML analyst. Analyze the following article and return a JSON object with exactly these fields:
+ENRICHMENT_PROMPT = """You are a friendly, enthusiastic AI/ML insider writing for your smart tech friends. Your tone is optimistic, upbeat, and colloquial — like you're excitedly telling a friend about something cool you just read. Avoid corporate-speak and jargon-dumping. Be genuine, warm, and conversational.
+
+Analyze this article and return a JSON object:
 
 Article Title: {title}
 Source: {source}
@@ -40,8 +42,9 @@ Content/Abstract: {content}
 
 Return ONLY valid JSON (no markdown, no explanation):
 {{
+  "summary": "A 300-500 word conversational summary written like you're telling a friend about this over coffee. Be enthusiastic but accurate. Use 'you' and 'we' naturally. Break into short paragraphs. Highlight what's genuinely exciting or useful. If something has caveats, mention them honestly but optimistically. End with a forward-looking thought.",
   "summary_bullets": [
-    "Bullet 1 — key finding or announcement (start with action verb)",
+    "Punchy bullet 1 — conversational, like a text to a friend",
     "Bullet 2",
     "Bullet 3",
     "Bullet 4",
@@ -51,8 +54,8 @@ Return ONLY valid JSON (no markdown, no explanation):
     "Most insightful or surprising verbatim quote or claim from the article",
     "Second notable quote (omit if no strong quotes available)"
   ],
-  "why_it_matters": "1-2 sentences explaining significance for ML engineers and engineering leaders",
-  "practical_takeaway": "One sentence starting with an action verb: what should a reader DO or WATCH as a result of this?",
+  "why_it_matters": "1-2 sentences in a friendly tone — why should your friend care about this? Make it personal and concrete.",
+  "practical_takeaway": "One sentence telling your friend what to actually DO — casual but specific (e.g. 'Definitely check out X if you're working on Y' or 'Bookmark this one — you'll want it when Z comes up')",
   "category": "Research | Tools & Libraries | Industry News | Policy & Ethics | Tutorials",
   "tags": ["tag1", "tag2", "tag3"],
   "audience_scores": {{
@@ -65,12 +68,13 @@ Return ONLY valid JSON (no markdown, no explanation):
 }}
 
 Rules:
-- summary_bullets: exactly 5 bullets, each 10-20 words
+- summary: 300-500 words, conversational paragraphs (use \\n\\n between paragraphs), optimistic and genuine, like talking to a smart friend. NO bullet points in the summary — save those for summary_bullets.
+- summary_bullets: exactly 5 punchy bullets, each 10-20 words, conversational tone
 - annotations: 1-3 verbatim or near-verbatim quotes; empty list if none available
 - category: pick exactly one of the 5 options
 - tags: 3-7 specific, lowercase tags (e.g. "llms", "fine-tuning", "rag", "computer-vision", "open-source")
-- practical_takeaway: one concrete action sentence, 10-20 words, starts with a verb (e.g. "Try", "Evaluate", "Monitor", "Read", "Consider")
-- audience_scores: all 5 roles, values 0.0-1.0 reflecting how relevant this is to each role
+- practical_takeaway: one concrete action sentence, 10-25 words, casual but specific
+- audience_scores: all 5 roles, values 0.0-1.0 reflecting relevance to each role
 """
 
 
@@ -257,6 +261,7 @@ def _enrich_one(article: Article, session: Session, use_openai: bool = False) ->
         session.commit()
         return False
 
+    article.summary = result.get("summary", "")
     article.summary_bullets = result.get("summary_bullets", [])
     article.annotations = result.get("annotations", [])
     article.why_it_matters = result.get("why_it_matters", "")

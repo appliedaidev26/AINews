@@ -13,6 +13,7 @@ export interface Article {
   author: string | null
   published_at: string | null
   digest_date: string | null
+  summary: string | null
   summary_bullets: string[]
   annotations: string[]
   why_it_matters: string | null

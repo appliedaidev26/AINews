@@ -27,6 +27,9 @@ function formatDate(iso: string | null): string {
 
 export function ArticleCard({ article, showRelevancy = false }: Props) {
   const [visited, setVisited] = useState(false)
+  const summaryPreview = article.summary
+    ? article.summary.split('\n\n')[0]?.slice(0, 180) + (article.summary.length > 180 ? '...' : '')
+    : null
   const bullets = article.summary_bullets?.slice(0, 2) ?? []
   const tags = article.tags?.slice(0, 4) ?? []
 
@@ -85,8 +88,10 @@ export function ArticleCard({ article, showRelevancy = false }: Props) {
         </a>
       </div>
 
-      {/* Bullet preview */}
-      {bullets.length > 0 && (
+      {/* Summary preview — narrative first, fallback to bullets */}
+      {summaryPreview ? (
+        <p className="text-xs text-gray-500 mb-1.5 pl-0.5 leading-relaxed">{summaryPreview}</p>
+      ) : bullets.length > 0 ? (
         <ul className="text-xs text-gray-500 space-y-0.5 mb-1.5 pl-0.5">
           {bullets.map((bullet, i) => (
             <li key={i} className="flex gap-1.5">
@@ -95,7 +100,7 @@ export function ArticleCard({ article, showRelevancy = false }: Props) {
             </li>
           ))}
         </ul>
-      )}
+      ) : null}
 
       {/* Tags */}
       {tags.length > 0 && (

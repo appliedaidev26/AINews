@@ -26,6 +26,7 @@ class Article(Base):
     digest_date = Column(Date, nullable=False, index=True)
 
     # AI-enriched fields
+    summary = Column(Text)                   # conversational narrative summary (300-500 words)
     summary_bullets = Column(JSONB)           # list of strings
     annotations = Column(JSONB)              # list of verbatim quotes
     why_it_matters = Column(Text)
@@ -59,6 +60,7 @@ class Article(Base):
             "published_at": self.published_at.isoformat() if self.published_at else None,
             "ingested_at": self.ingested_at.isoformat() if self.ingested_at else None,
             "digest_date": self.digest_date.isoformat() if self.digest_date else None,
+            "summary": self.summary,
             "summary_bullets": self.summary_bullets or [],
             "annotations": self.annotations or [],
             "why_it_matters": self.why_it_matters,
