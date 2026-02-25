@@ -51,7 +51,7 @@ def _find_neighbors(embedding: list[float], k: int = 5) -> list[tuple[str, float
         )
         request = aiplatform_v1.FindNeighborsRequest(
             index_endpoint=endpoint,
-            deployed_index_id=settings.vertex_ai_index_id,
+            deployed_index_id=settings.vertex_ai_deployed_index_id or settings.vertex_ai_index_id,
             queries=[query],
         )
         response = client.find_neighbors(request=request)
