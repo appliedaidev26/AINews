@@ -8,11 +8,29 @@ from backend.db.models import Base, RssFeed
 logger = logging.getLogger(__name__)
 
 # Async engine for FastAPI
-async_engine = create_async_engine(settings.database_url, echo=False, pool_pre_ping=True)
+# db-f1-micro has 25 max_connections; keep pool tiny so multiple Cloud Run instances fit.
+# connect_args timeout prevents hangs when DB is unreachable during startup.
+async_engine = create_async_engine(
+    settings.database_url,
+    echo=False,
+    pool_pre_ping=True,
+    pool_size=1,
+    max_overflow=1,
+    pool_timeout=5,
+    connect_args={"timeout": 10},  # asyncpg connection-level timeout (seconds)
+)
 AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False, class_=AsyncSession)
 
-# Sync engine for ingestion pipeline
-sync_engine = create_engine(settings.database_url_sync, echo=False, pool_pre_ping=True)
+# Sync engine for ingestion pipeline (used in background tasks, not concurrent with API)
+sync_engine = create_engine(
+    settings.database_url_sync,
+    echo=False,
+    pool_pre_ping=True,
+    pool_size=1,
+    max_overflow=1,
+    pool_timeout=5,
+    connect_args={"connect_timeout": 10},  # psycopg2 connection-level timeout (seconds)
+)
 
 
 async def get_db() -> AsyncSession:

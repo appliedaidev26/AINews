@@ -74,8 +74,13 @@ async def _cleanup_orphaned_runs() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting up — creating tables if needed")
-    await create_tables()
-    await _cleanup_orphaned_runs()
+    try:
+        await create_tables()
+        await _cleanup_orphaned_runs()
+    except Exception as exc:
+        # Don't crash on startup if DB is temporarily unavailable.
+        # The app will still serve /health; DB-backed routes will fail until DB recovers.
+        logger.error(f"Startup DB init failed (non-fatal): {exc}")
     _init_firebase()
     yield
     logger.info("Shutting down")
