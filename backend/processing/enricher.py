@@ -32,7 +32,7 @@ def _get_rate_sem() -> asyncio.Semaphore:
         _rate_sem = asyncio.Semaphore(5)
     return _rate_sem
 
-ENRICHMENT_PROMPT = """You are a friendly, enthusiastic AI/ML insider writing for your smart tech friends. Your tone is optimistic, upbeat, and colloquial — like you're excitedly telling a friend about something cool you just read. Avoid corporate-speak and jargon-dumping. Be genuine, warm, and conversational.
+ENRICHMENT_PROMPT = """You are a sharp, no-nonsense AI/ML analyst writing for smart technical readers. Your style is BowTied Bull — confident, contrarian, direct. You cut through hype and tell readers what actually matters. Dry humor welcome. No corporate-speak, no breathless enthusiasm. Assume the reader is technically competent.
 
 Analyze this article and return a JSON object:
 
@@ -42,9 +42,9 @@ Content/Abstract: {content}
 
 Return ONLY valid JSON (no markdown, no explanation):
 {{
-  "summary": "A 300-500 word conversational summary written like you're telling a friend about this over coffee. Be enthusiastic but accurate. Use 'you' and 'we' naturally. Break into short paragraphs. Highlight what's genuinely exciting or useful. If something has caveats, mention them honestly but optimistically. End with a forward-looking thought.",
+  "summary": "A 300-500 word no-BS summary. Open with the key insight — what this actually means, not what the authors claim. Short punchy paragraphs (2-3 sentences max). Use **bold** for critical points. Be contrarian where warranted — if the paper oversells, say so. If it's genuinely important, explain why most people will miss that. End with 'what this means for you' — practical implications, not vague optimism.",
   "summary_bullets": [
-    "Punchy bullet 1 — conversational, like a text to a friend",
+    "Punchy bullet 1 — the actual signal, not the noise",
     "Bullet 2",
     "Bullet 3",
     "Bullet 4",
@@ -54,8 +54,8 @@ Return ONLY valid JSON (no markdown, no explanation):
     "Most insightful or surprising verbatim quote or claim from the article",
     "Second notable quote (omit if no strong quotes available)"
   ],
-  "why_it_matters": "1-2 sentences in a friendly tone — why should your friend care about this? Make it personal and concrete.",
-  "practical_takeaway": "One sentence telling your friend what to actually DO — casual but specific (e.g. 'Definitely check out X if you're working on Y' or 'Bookmark this one — you'll want it when Z comes up')",
+  "why_it_matters": "1-2 sentences — cut through the noise. Why should a busy technical leader actually care? Be specific and concrete, not hand-wavy.",
+  "practical_takeaway": "One sentence — what to actually DO with this information. Direct, specific, no fluff (e.g. 'If you're running RAG pipelines, swap out X for Y — the benchmarks aren't even close' or 'Skip this one unless you're in computer vision')",
   "category": "Research | Tools & Libraries | Industry News | Policy & Ethics | Tutorials",
   "tags": ["tag1", "tag2", "tag3"],
   "audience_scores": {{
@@ -68,12 +68,12 @@ Return ONLY valid JSON (no markdown, no explanation):
 }}
 
 Rules:
-- summary: 300-500 words, conversational paragraphs (use \\n\\n between paragraphs), optimistic and genuine, like talking to a smart friend. NO bullet points in the summary — save those for summary_bullets.
-- summary_bullets: exactly 5 punchy bullets, each 10-20 words, conversational tone
+- summary: 300-500 words. Short paragraphs (2-3 sentences). Use **bold** for key insights. Be direct — open with what matters, not throat-clearing. Contrarian where honest. NO bullet points in the summary — save those for summary_bullets. Use \\n\\n between paragraphs.
+- summary_bullets: exactly 5 punchy bullets, each 10-20 words, cut-the-noise style
 - annotations: 1-3 verbatim or near-verbatim quotes; empty list if none available
 - category: pick exactly one of the 5 options
 - tags: 3-7 specific, lowercase tags (e.g. "llms", "fine-tuning", "rag", "computer-vision", "open-source")
-- practical_takeaway: one concrete action sentence, 10-25 words, casual but specific
+- practical_takeaway: one concrete action sentence, 10-25 words, direct and specific
 - audience_scores: all 5 roles, values 0.0-1.0 reflecting relevance to each role
 """
 
@@ -125,6 +125,8 @@ def _classify_error(exc: Exception) -> str:
         return "quota"
     if "not found" in msg or "404" in msg:
         return "model_not_found"
+    if "api_key_invalid" in msg or "api key expired" in msg:
+        return "auth"
     return "unknown"
 
 

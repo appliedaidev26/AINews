@@ -713,19 +713,20 @@ async def clear_db(
     key: str = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """Truncate articles, pipeline_runs, and user_article_scores. Preserves rss_feeds and user_profiles."""
+    """Truncate articles, pipeline_runs, pipeline_task_runs, and user_article_scores. Preserves rss_feeds and user_profiles."""
     article_count = (await db.execute(text("SELECT COUNT(*) FROM articles"))).scalar()
     run_count     = (await db.execute(text("SELECT COUNT(*) FROM pipeline_runs"))).scalar()
+    task_count    = (await db.execute(text("SELECT COUNT(*) FROM pipeline_task_runs"))).scalar()
 
     await db.execute(text(
-        "TRUNCATE TABLE articles, pipeline_runs, user_article_scores RESTART IDENTITY CASCADE"
+        "TRUNCATE TABLE articles, pipeline_runs, pipeline_task_runs, user_article_scores RESTART IDENTITY CASCADE"
     ))
     await db.commit()
 
-    logger.warning(f"DB cleared by admin: {article_count} articles, {run_count} pipeline runs deleted")
+    logger.warning(f"DB cleared by admin: {article_count} articles, {run_count} pipeline runs, {task_count} task runs deleted")
     return {
         "status":    "cleared",
-        "deleted":   {"articles": article_count, "pipeline_runs": run_count},
+        "deleted":   {"articles": article_count, "pipeline_runs": run_count, "pipeline_task_runs": task_count},
         "preserved": ["rss_feeds", "user_profiles"],
     }
 
