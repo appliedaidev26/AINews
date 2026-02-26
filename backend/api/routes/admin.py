@@ -17,6 +17,7 @@ from backend.db.models import Article, PipelineRun, PipelineTaskRun, RssFeed
 from backend.ingestion.pipeline import run_pipeline
 from backend.ingestion.cloud_tasks import enqueue_fetch_task
 from backend.processing.enricher import enrich_failed_articles, enrich_pending_articles
+from backend.ingestion.pubsub import publish_articles_saved
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -178,6 +179,52 @@ async def retry_failed_enrichments(
         "status": "started",
         "run_id": run.id,
         "article_count": article_count,
+        "date_from": str(effective_from),
+        "date_to": str(effective_to),
+    }
+
+
+@router.post("/republish-failed")
+async def republish_failed(
+    date_from: Optional[date] = Query(None),
+    date_to: Optional[date] = Query(None),
+    key: str = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reset is_enriched=-1 articles to 0 and republish to Pub/Sub for batch processing."""
+    effective_from = date_from or (date.today() - timedelta(days=90))
+    effective_to = date_to or date.today()
+
+    result = await db.execute(
+        select(Article.id).where(
+            Article.is_enriched == -1,
+            Article.digest_date >= effective_from,
+            Article.digest_date <= effective_to,
+        )
+    )
+    article_ids = list(result.scalars().all())
+
+    if not article_ids:
+        return {"status": "nothing_to_republish", "count": 0}
+
+    # Reset to pending
+    await db.execute(
+        text("UPDATE articles SET is_enriched = 0 WHERE id = ANY(:ids)"),
+        {"ids": article_ids},
+    )
+    await db.commit()
+
+    # Republish to Pub/Sub in batches (enrich handler processes 15 at a time)
+    ok = publish_articles_saved(
+        article_ids=article_ids,
+        run_id=0,
+        source="republish",
+        target_date="republish",
+    )
+
+    return {
+        "status": "republished" if ok else "publish_failed",
+        "count": len(article_ids),
         "date_from": str(effective_from),
         "date_to": str(effective_to),
     }
