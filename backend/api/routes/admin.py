@@ -120,7 +120,7 @@ async def cancel_run(
     # Task not in memory — server may have restarted. Fall back to direct DB update.
     result = await db.execute(select(PipelineRun).where(PipelineRun.id == run_id))
     run = result.scalar_one_or_none()
-    if not run or run.status != "running":
+    if not run or run.status not in ("running", "queued"):
         raise HTTPException(status_code=404, detail="No active run found for this run_id")
 
     run.status = "cancelled"

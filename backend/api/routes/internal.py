@@ -321,7 +321,22 @@ async def finalize_runs(_: None = Depends(require_internal)):
         ).scalars().all()
 
         finalized = []
+        stale_cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+
         for run in active_runs:
+            # Expire tasks stuck in "running" for >10 minutes (worker died)
+            stale_tasks = session.execute(
+                select(PipelineTaskRun).where(
+                    PipelineTaskRun.run_id == run.id,
+                    PipelineTaskRun.status == "running",
+                    PipelineTaskRun.updated_at < stale_cutoff,
+                )
+            ).scalars().all()
+            for t in stale_tasks:
+                t.status = "failed"
+                t.error_message = "Timed out — worker did not report back within 10 minutes"
+                logger.warning("Marked stale task %s (run=%s, %s/%s) as failed", t.id, run.id, t.source, t.date)
+
             # Count completed tasks
             counts = session.execute(
                 select(
@@ -336,14 +351,19 @@ async def finalize_runs(_: None = Depends(require_internal)):
             ).one()
 
             completed = counts.succeeded + counts.failed
-            if completed < run.total_tasks:
+            # Also account for tasks that were never created (enqueue failed or worker never started)
+            run_age_minutes = (datetime.now(timezone.utc) - run.started_at).total_seconds() / 60
+            tasks_missing = run.total_tasks - counts.total
+            stale_run = run_age_minutes > 15 and tasks_missing > 0
+
+            if completed < run.total_tasks and not stale_run:
                 # Set to running if still queued
                 if run.status == "queued" and counts.total > 0:
                     run.status = "running"
                 continue
 
-            # All tasks have completed
-            if counts.failed > 0:
+            # All tasks have completed (or run is stale with missing tasks)
+            if counts.failed > 0 or tasks_missing > 0:
                 run.status = "partial"
             else:
                 run.status = "success"
