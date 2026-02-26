@@ -24,15 +24,15 @@ async_engine = create_async_engine(
 AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False, class_=AsyncSession)
 
 # Sync engine for ingestion pipeline (used in background tasks, not concurrent with API)
-# Use larger pool locally so enrichment doesn't starve on concurrent commits.
-_is_local = not settings.gcp_project_id
+# Enrichment semaphore allows 5 concurrent; pool must accommodate that.
+# db-f1-micro has 25 max_connections; 5+3=8 total leaves room for other Cloud Run instances.
 sync_engine = create_engine(
     settings.database_url_sync,
     echo=False,
     pool_pre_ping=True,
-    pool_size=3 if _is_local else 1,
-    max_overflow=2 if _is_local else 1,
-    pool_timeout=10 if _is_local else 5,
+    pool_size=5,
+    max_overflow=3,
+    pool_timeout=30,
     connect_args={"connect_timeout": 10},  # psycopg2 connection-level timeout (seconds)
 )
 
