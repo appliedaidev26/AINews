@@ -78,7 +78,7 @@ async def get_personalized_feed(
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found — complete onboarding first")
 
-    effective_from = date_from or (date.today() - timedelta(days=7))
+    effective_from = date_from or (date.today() - timedelta(days=90))
     effective_to = date_to or date.today()
 
     # Build query joining articles with user scores

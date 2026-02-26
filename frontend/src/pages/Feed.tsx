@@ -140,6 +140,7 @@ export function Feed() {
             sort_by: sortBy,
             ...dateRange,
             page,
+            per_page: PER_PAGE,
           })
           if (!cancelled) {
             setArticles(res.articles)

@@ -124,7 +124,7 @@ export const api = {
   saveProfile: (profile: Omit<UserProfile, 'session_id'>) =>
     authPost<UserProfile>('/profile', profile),
 
-  getPersonalizedFeed: (params?: { category?: string; tags?: string; source_type?: string; source_name?: string; date_from?: string; date_to?: string; sort_by?: string; page?: number }) =>
+  getPersonalizedFeed: (params?: { category?: string; tags?: string; source_type?: string; source_name?: string; date_from?: string; date_to?: string; sort_by?: string; page?: number; per_page?: number }) =>
     authGet<FeedResponse>('/profile/feed', params as Record<string, string | number>),
 }
 
