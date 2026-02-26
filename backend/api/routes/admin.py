@@ -455,6 +455,46 @@ async def queue_run(
     await db.commit()
     await db.refresh(run)
 
+    # If Cloud Tasks is not configured, fall back to in-process pipeline
+    cloud_tasks_available = bool(settings.gcp_project_id and settings.cloud_run_url)
+
+    if not cloud_tasks_available:
+        logger.info(
+            "queue-run: Cloud Tasks not configured — running in-process for %s → %s",
+            effective_from, effective_to,
+        )
+        run.status = "running"
+        run.total_tasks = None  # mark as legacy mode
+        run.progress = {
+            "run_type": "backfill", "stage": "fetching",
+            "sources_used": sorted(enabled_sources),
+        }
+        await db.commit()
+
+        # Match /admin/ingest pattern — run_pipeline handles its own
+        # status updates via _update_run(), no wrapper needed.
+        task = asyncio.create_task(
+            run_pipeline(
+                date_from=effective_from,
+                date_to=effective_to,
+                run_id=run.id,
+                enabled_sources=enabled_sources,
+            )
+        )
+        _active_tasks[run.id] = task
+        task.add_done_callback(lambda _: _active_tasks.pop(run.id, None))
+
+        return {
+            "status": "running",
+            "run_id": run.id,
+            "total_tasks": total_tasks,
+            "enqueued": 0,
+            "failed_to_enqueue": 0,
+            "date_from": str(effective_from),
+            "date_to": str(effective_to),
+            "sources": sorted(enabled_sources),
+        }
+
     # Enqueue Cloud Tasks
     enqueued = 0
     failed = 0

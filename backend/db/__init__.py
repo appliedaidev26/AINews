@@ -10,25 +10,29 @@ logger = logging.getLogger(__name__)
 # Async engine for FastAPI
 # db-f1-micro has 25 max_connections; keep pool tiny so multiple Cloud Run instances fit.
 # connect_args timeout prevents hangs when DB is unreachable during startup.
+# Use larger pool locally so background enrichment doesn't starve API requests.
+_is_local_env = not settings.gcp_project_id
 async_engine = create_async_engine(
     settings.database_url,
     echo=False,
     pool_pre_ping=True,
-    pool_size=1,
-    max_overflow=1,
-    pool_timeout=5,
+    pool_size=3 if _is_local_env else 1,
+    max_overflow=2 if _is_local_env else 1,
+    pool_timeout=10 if _is_local_env else 5,
     connect_args={"timeout": 10},  # asyncpg connection-level timeout (seconds)
 )
 AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False, class_=AsyncSession)
 
 # Sync engine for ingestion pipeline (used in background tasks, not concurrent with API)
+# Use larger pool locally so enrichment doesn't starve on concurrent commits.
+_is_local = not settings.gcp_project_id
 sync_engine = create_engine(
     settings.database_url_sync,
     echo=False,
     pool_pre_ping=True,
-    pool_size=1,
-    max_overflow=1,
-    pool_timeout=5,
+    pool_size=3 if _is_local else 1,
+    max_overflow=2 if _is_local else 1,
+    pool_timeout=10 if _is_local else 5,
     connect_args={"connect_timeout": 10},  # psycopg2 connection-level timeout (seconds)
 )
 

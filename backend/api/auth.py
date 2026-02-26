@@ -21,7 +21,7 @@ async def get_current_uid(authorization: str = Header(...)) -> str:
 
     try:
         import firebase_admin.auth as fb_auth
-        decoded = fb_auth.verify_id_token(token)
+        decoded = fb_auth.verify_id_token(token, clock_skew_seconds=60)
         return decoded["uid"]
     except ImportError:
         logger.error("firebase-admin not installed — run: pip install firebase-admin")

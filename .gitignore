@@ -26,5 +26,8 @@ frontend/dist/
 # Claude
 .claude/
 
+# Firebase
+.firebase/
+
 # Misc
 *.DS_Store
