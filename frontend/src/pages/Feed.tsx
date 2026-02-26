@@ -212,33 +212,6 @@ export function Feed() {
 
       {/* Date filter pills + Sort toggle */}
       <div className="flex items-center gap-1.5 mb-5 flex-wrap">
-        {/* Sort by */}
-        <span className="text-xs text-gray-400 mr-0.5">Sort:</span>
-        {profile && (
-          <button
-            onClick={() => setSortBy('relevancy')}
-            className={`px-3 py-1 text-xs rounded-full border transition-colors ${
-              sortBy === 'relevancy'
-                ? 'bg-indigo-600 text-white border-indigo-600'
-                : 'border-gray-200 text-gray-500 hover:border-gray-400 hover:text-gray-700'
-            }`}
-          >
-            Relevance
-          </button>
-        )}
-        <button
-          onClick={() => setSortBy('date')}
-          className={`px-3 py-1 text-xs rounded-full border transition-colors ${
-            sortBy === 'date'
-              ? 'bg-indigo-600 text-white border-indigo-600'
-              : 'border-gray-200 text-gray-500 hover:border-gray-400 hover:text-gray-700'
-          }`}
-        >
-          Date
-        </button>
-
-        <span className="mx-1 h-4 border-l border-gray-200" />
-
         {DATE_PRESETS.map(({ value, label }) => (
           <button
             key={value}
@@ -296,6 +269,19 @@ export function Feed() {
             ))}
           </select>
         </div>
+
+        {/* Sort dropdown — only shown when user has a profile */}
+        {profile && (
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value as 'relevancy' | 'date')}
+            className="ml-auto text-xs rounded-full border border-gray-200 px-3 py-1 bg-transparent
+                       text-gray-500 cursor-pointer outline-none hover:border-gray-400"
+          >
+            <option value="relevancy">Sort: Relevance</option>
+            <option value="date">Sort: Date</option>
+          </select>
+        )}
       </div>
 
       {/* Trending strip */}
