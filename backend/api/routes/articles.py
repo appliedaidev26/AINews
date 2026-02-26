@@ -57,6 +57,10 @@ async def list_articles(
         if conditions:
             stmt = stmt.where(or_(*conditions))
 
+    # Total count (before pagination) for frontend pagination controls
+    count_stmt = select(func.count()).select_from(stmt.subquery())
+    total = (await db.execute(count_stmt)).scalar() or 0
+
     if sort_by == "date":
         stmt = stmt.order_by(desc(Article.published_at))
     else:
@@ -69,6 +73,7 @@ async def list_articles(
     return {
         "page": page,
         "per_page": per_page,
+        "total": total,
         "articles": [a.to_dict() for a in articles],
     }
 

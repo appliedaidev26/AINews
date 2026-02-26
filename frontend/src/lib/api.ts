@@ -105,7 +105,7 @@ async function authPost<T>(path: string, body: unknown): Promise<T> {
 
 export const api = {
   getArticles: (params?: { digest_date?: string; date_from?: string; date_to?: string; category?: string; tags?: string; source_type?: string; source_name?: string; sort_by?: string; page?: number; per_page?: number }) =>
-    get<{ articles: Article[]; page: number; per_page: number }>('/articles', params as Record<string, string | number>),
+    get<{ articles: Article[]; page: number; per_page: number; total: number }>('/articles', params as Record<string, string | number>),
 
   getArticle: (id: number) => get<ArticleDetail>(`/articles/${id}`),
 

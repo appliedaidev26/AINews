@@ -158,7 +158,7 @@ export function Feed() {
           })
           if (!cancelled) {
             setArticles(res.articles)
-            setTotal(res.articles.length + (page - 1) * PER_PAGE)
+            setTotal(res.total)
           }
         }
       } catch {
