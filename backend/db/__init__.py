@@ -10,28 +10,30 @@ logger = logging.getLogger(__name__)
 # Async engine for FastAPI
 # db-f1-micro has 25 max_connections; keep pool tiny so multiple Cloud Run instances fit.
 # connect_args timeout prevents hangs when DB is unreachable during startup.
-# Use larger pool locally so background enrichment doesn't starve API requests.
+# db-f1-micro has 25 max_connections.
+# With maxScale=4 Cloud Run instances, budget ~6 connections per instance (4×6=24).
+# Local dev: larger pools since only one process runs.
 _is_local_env = not settings.gcp_project_id
 async_engine = create_async_engine(
     settings.database_url,
     echo=False,
     pool_pre_ping=True,
-    pool_size=3 if _is_local_env else 1,
+    pool_size=3 if _is_local_env else 2,
     max_overflow=2 if _is_local_env else 1,
-    pool_timeout=10 if _is_local_env else 5,
+    pool_timeout=10 if _is_local_env else 10,
     connect_args={"timeout": 10},  # asyncpg connection-level timeout (seconds)
 )
 AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False, class_=AsyncSession)
 
 # Sync engine for ingestion pipeline (used in background tasks, not concurrent with API)
-# Enrichment semaphore allows 5 concurrent; pool must accommodate that.
-# db-f1-micro has 25 max_connections; 5+3=8 total leaves room for other Cloud Run instances.
+# Production: 3+0=3 per instance (4 instances × 3 = 12, plus async 4×3 = 12, total 24 ≤ 25).
+# Enrichment semaphore (5) may exceed pool — that's fine, extras wait for a free connection.
 sync_engine = create_engine(
     settings.database_url_sync,
     echo=False,
     pool_pre_ping=True,
-    pool_size=5,
-    max_overflow=3,
+    pool_size=5 if _is_local_env else 3,
+    max_overflow=3 if _is_local_env else 0,
     pool_timeout=30,
     connect_args={"connect_timeout": 10},  # psycopg2 connection-level timeout (seconds)
 )
