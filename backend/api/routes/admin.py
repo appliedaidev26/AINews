@@ -154,6 +154,8 @@ async def retry_failed_enrichments(
     run = PipelineRun(
         started_at=datetime.now(timezone.utc),
         status="running",
+        target_date=str(effective_from),
+        date_to=str(effective_to),
         triggered_by="retry_failed",
         progress={
             "run_type": "retry",
