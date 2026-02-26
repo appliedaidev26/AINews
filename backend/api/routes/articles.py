@@ -21,6 +21,7 @@ async def list_articles(
     tags: Optional[str] = Query(None, description="Comma-separated tags to filter by (any match)"),
     source_type: Optional[str] = Query(None, description="Comma-separated source types: hn,reddit,arxiv,rss"),
     source_name: Optional[str] = Query(None, description="Comma-separated source names to filter by (e.g. 'OpenAI Blog,Anthropic Blog')"),
+    sort_by: Optional[str] = Query("engagement", description="Sort order: engagement or date"),
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
@@ -56,7 +57,10 @@ async def list_articles(
         if conditions:
             stmt = stmt.where(or_(*conditions))
 
-    stmt = stmt.order_by(desc(Article.engagement_signal), desc(Article.published_at))
+    if sort_by == "date":
+        stmt = stmt.order_by(desc(Article.published_at))
+    else:
+        stmt = stmt.order_by(desc(Article.engagement_signal), desc(Article.published_at))
     stmt = stmt.offset((page - 1) * per_page).limit(per_page)
 
     result = await db.execute(stmt)

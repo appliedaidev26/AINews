@@ -94,6 +94,7 @@ export function Feed() {
   const [rangeTo,   setRangeTo]   = useState<string | null>(MONTHS[0].value)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [sortBy, setSortBy] = useState<'relevancy' | 'date'>(profile ? 'relevancy' : 'date')
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)
 
@@ -107,9 +108,14 @@ export function Feed() {
       .catch(() => {})
   }, [])
 
+  // Sync sortBy default when profile loads/unloads
+  useEffect(() => {
+    setSortBy(profile ? 'relevancy' : 'date')
+  }, [profile])
+
   useEffect(() => {
     setPage(1)
-  }, [filters, datePreset, rangeFrom, rangeTo, profile])
+  }, [filters, datePreset, rangeFrom, rangeTo, profile, sortBy])
 
 
 
@@ -131,6 +137,7 @@ export function Feed() {
             tags: tagsParam,
             source_type: sourceParam,
             source_name: sourceNameParam,
+            sort_by: sortBy,
             ...dateRange,
             page,
           })
@@ -144,6 +151,7 @@ export function Feed() {
             tags: tagsParam,
             source_type: sourceParam,
             source_name: sourceNameParam,
+            sort_by: sortBy === 'relevancy' ? 'engagement' : 'date',
             ...dateRange,
             page,
             per_page: PER_PAGE,
@@ -162,7 +170,7 @@ export function Feed() {
 
     fetchFeed()
     return () => { cancelled = true }
-  }, [profile, filters, datePreset, rangeFrom, rangeTo, page])
+  }, [profile, filters, datePreset, rangeFrom, rangeTo, page, sortBy])
 
   const totalPages = Math.ceil(total / PER_PAGE)
 
@@ -202,8 +210,35 @@ export function Feed() {
         </div>
       </div>
 
-      {/* Date filter pills */}
+      {/* Date filter pills + Sort toggle */}
       <div className="flex items-center gap-1.5 mb-5 flex-wrap">
+        {/* Sort by */}
+        <span className="text-xs text-gray-400 mr-0.5">Sort:</span>
+        {profile && (
+          <button
+            onClick={() => setSortBy('relevancy')}
+            className={`px-3 py-1 text-xs rounded-full border transition-colors ${
+              sortBy === 'relevancy'
+                ? 'bg-indigo-600 text-white border-indigo-600'
+                : 'border-gray-200 text-gray-500 hover:border-gray-400 hover:text-gray-700'
+            }`}
+          >
+            Relevance
+          </button>
+        )}
+        <button
+          onClick={() => setSortBy('date')}
+          className={`px-3 py-1 text-xs rounded-full border transition-colors ${
+            sortBy === 'date'
+              ? 'bg-indigo-600 text-white border-indigo-600'
+              : 'border-gray-200 text-gray-500 hover:border-gray-400 hover:text-gray-700'
+          }`}
+        >
+          Date
+        </button>
+
+        <span className="mx-1 h-4 border-l border-gray-200" />
+
         {DATE_PRESETS.map(({ value, label }) => (
           <button
             key={value}

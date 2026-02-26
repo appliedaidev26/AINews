@@ -64,6 +64,7 @@ async def get_personalized_feed(
     source_name: Optional[str] = Query(None, description="Comma-separated source names to filter by (e.g. 'OpenAI Blog,Anthropic Blog')"),
     date_from: Optional[date] = Query(None, description="Range start date (inclusive); defaults to 7 days ago"),
     date_to: Optional[date] = Query(None, description="Range end date (inclusive); defaults to today"),
+    sort_by: Optional[str] = Query("relevancy", description="Sort order: relevancy or date"),
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
@@ -125,7 +126,10 @@ async def get_personalized_feed(
         d["relevancy_score"] = round(score, 3) if score is not None else 0.0
         feed.append(d)
 
-    feed.sort(key=lambda r: r["relevancy_score"], reverse=True)
+    if sort_by == "date":
+        feed.sort(key=lambda r: r.get("published_at") or r.get("digest_date") or "", reverse=True)
+    else:
+        feed.sort(key=lambda r: r["relevancy_score"], reverse=True)
 
     offset = (page - 1) * per_page
     paginated = feed[offset : offset + per_page]
