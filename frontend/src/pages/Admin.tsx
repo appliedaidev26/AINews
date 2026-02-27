@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { adminApi, type PipelineRun, type PipelineStage, type RunType, type CoverageDay, type RssFeed, type SourcesResponse } from '../lib/api'
+import { adminApi, type PipelineRun, type PipelineStage, type RunType, type CoverageDay, type RssFeed, type SourcesResponse, type DlqResponse } from '../lib/api'
 
 const STORAGE_KEY = 'ainews_admin_key'
 
@@ -658,6 +658,10 @@ export function Admin() {
   const [enriching,  setEnriching]  = useState(false)
   const [enrichResult, setEnrichResult] = useState<{ run_id: number; article_count: number } | null>(null)
 
+  // DLQ state
+  const [dlqData, setDlqData] = useState<DlqResponse | null>(null)
+  const [dlqRetrying, setDlqRetrying] = useState(false)
+
   // Run History expand state
   const [expandedRunId, setExpandedRunId] = useState<number | null>(null)
 
@@ -769,6 +773,15 @@ export function Admin() {
     }).catch(() => {})
   }, [isAuthenticated, key])
 
+  // Load and poll DLQ data
+  useEffect(() => {
+    if (!isAuthenticated) return
+    const loadDlq = () => adminApi.getDlq(key).then(setDlqData).catch(() => {})
+    loadDlq()
+    const iv = setInterval(loadDlq, POLL_COVERAGE_MS)
+    return () => clearInterval(iv)
+  }, [isAuthenticated, key])
+
   function handleDateFromChange(val: string) {
     setDateFrom(val)
     // Clamp: dateTo must not be before dateFrom
@@ -855,6 +868,22 @@ export function Admin() {
       setError(err instanceof Error ? err.message : 'Enrichment trigger failed')
     } finally {
       setEnriching(false)
+    }
+  }
+
+  async function handleRetryDlq() {
+    setDlqRetrying(true)
+    setError(null)
+    try {
+      await adminApi.retryDlq(key)
+      // Refresh DLQ data
+      const updated = await adminApi.getDlq(key)
+      setDlqData(updated)
+    } catch (err) {
+      if (err instanceof Error && err.message === 'ADMIN_FORBIDDEN') { clearKey(); return }
+      setError(err instanceof Error ? err.message : 'DLQ retry failed')
+    } finally {
+      setDlqRetrying(false)
     }
   }
 
@@ -1122,6 +1151,81 @@ export function Admin() {
           )}
         </section>
 
+        {/* Dead Letter Queue */}
+        {dlqData && dlqData.total > 0 && (
+          <section className="space-y-3">
+            <p className="section-heading">Dead Letter Queue</p>
+            <p className="text-xs text-gray-500">
+              Articles permanently stuck after max retries. Reset and reprocess them below.
+            </p>
+            <div className="flex gap-3">
+              <div className="border border-red-200 bg-red-50 rounded px-4 py-2 text-center">
+                <p className="text-lg font-semibold text-red-700">{dlqData.enrich_failed}</p>
+                <p className="text-xs text-red-600">Enrich Failed</p>
+              </div>
+              <div className="border border-orange-200 bg-orange-50 rounded px-4 py-2 text-center">
+                <p className="text-lg font-semibold text-orange-700">{dlqData.vectorize_failed}</p>
+                <p className="text-xs text-orange-600">Vectorize Failed</p>
+              </div>
+              <div className="border border-gray-200 rounded px-4 py-2 text-center">
+                <p className="text-lg font-semibold text-gray-700">{dlqData.total}</p>
+                <p className="text-xs text-gray-500">Total DLQ</p>
+              </div>
+              <div className="flex items-center ml-auto">
+                <button
+                  onClick={handleRetryDlq}
+                  disabled={dlqRetrying}
+                  className="bg-indigo-600 text-white text-sm px-4 py-2 rounded hover:bg-indigo-700 disabled:opacity-50"
+                >
+                  {dlqRetrying ? 'Retrying…' : 'Retry All'}
+                </button>
+              </div>
+            </div>
+            {dlqData.articles.length > 0 && (
+              <div className="border border-gray-200 rounded overflow-hidden">
+                <table className="w-full text-xs">
+                  <thead className="bg-gray-50 border-b border-gray-200">
+                    <tr>
+                      {['ID', 'Title', 'Source', 'Date', 'Ingested', 'Issue', 'Retries'].map(h => (
+                        <th key={h} className="text-left px-3 py-2 text-gray-500 font-medium">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dlqData.articles.map((a, i) => (
+                      <tr key={a.id} className={`border-b ${i === dlqData.articles.length - 1 ? 'border-transparent' : 'border-gray-100'}`}>
+                        <td className="px-3 py-1.5 font-mono text-gray-500">{a.id}</td>
+                        <td className="px-3 py-1.5 max-w-xs truncate">
+                          <a href={a.original_url} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">
+                            {a.title}
+                          </a>
+                        </td>
+                        <td className="px-3 py-1.5 text-gray-600">{a.source_type}</td>
+                        <td className="px-3 py-1.5 font-mono text-gray-600">{a.digest_date ?? '—'}</td>
+                        <td className="px-3 py-1.5 text-gray-500">{a.ingested_at ? new Date(a.ingested_at).toLocaleDateString() : '—'}</td>
+                        <td className="px-3 py-1.5">
+                          {a.is_enriched === -1 && (
+                            <span className="inline-block bg-red-50 text-red-700 border border-red-200 rounded px-1.5 py-0.5 text-[10px] font-medium">Enrich</span>
+                          )}
+                          {a.is_vectorized === -1 && (
+                            <span className="inline-block bg-orange-50 text-orange-700 border border-orange-200 rounded px-1.5 py-0.5 text-[10px] font-medium ml-1">Vectorize</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-1.5 text-gray-500">{a.enrich_retries}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {dlqData.total > dlqData.per_page && (
+                  <p className="text-xs text-gray-400 px-3 py-2">
+                    Showing {dlqData.articles.length} of {dlqData.total} articles
+                  </p>
+                )}
+              </div>
+            )}
+          </section>
+        )}
+
         {/* Last run summary */}
         {latestSuccess && latestSuccess !== activeRun && (
           <section>
@@ -1235,7 +1339,7 @@ export function Admin() {
                           <td className="px-3 py-2">{run.result.saved ?? '—'}</td>
                           <td className="px-3 py-2">{run.result.enriched ?? '—'}</td>
                           <td className="px-3 py-2 whitespace-nowrap">
-                            {run.total_tasks != null && (
+                            {(getRunType(run) === 'ingestion' || getRunType(run) === 'backfill') && (
                               <Link
                                 to={`/admin/backfill/${run.id}`}
                                 onClick={e => e.stopPropagation()}

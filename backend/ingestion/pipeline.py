@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from backend.config import settings
 from backend.db import sync_engine
-from backend.db.models import Article
+from backend.db.models import Article, PipelineTaskRun
 from backend.ingestion.sources.hackernews import fetch_hackernews
 from backend.ingestion.sources.reddit import fetch_reddit
 from backend.ingestion.sources.arxiv_source import fetch_arxiv
@@ -62,6 +62,43 @@ def _update_run(run_id, status, result=None, error_message=None, duration_second
         session.commit()
 
 
+def _upsert_task_run(run_id, source: str, target_date, status: str,
+                     articles_saved=None, error_message=None):
+    """UPSERT a pipeline_task_runs row for one (run_id, source, date)."""
+    if run_id is None:
+        return
+    from sqlalchemy.orm import Session as _Session
+    from backend.db import sync_engine as _engine
+    with _Session(_engine) as session:
+        row = session.execute(
+            select(PipelineTaskRun).where(
+                PipelineTaskRun.run_id == run_id,
+                PipelineTaskRun.source == source,
+                PipelineTaskRun.date == target_date,
+            )
+        ).scalar_one_or_none()
+
+        if row is None:
+            row = PipelineTaskRun(
+                run_id=run_id,
+                source=source,
+                date=target_date,
+                status=status,
+                articles_saved=articles_saved,
+                error_message=error_message,
+            )
+            session.add(row)
+        else:
+            row.status = status
+            if articles_saved is not None:
+                row.articles_saved = articles_saved
+            if error_message is not None:
+                row.error_message = error_message
+            row.updated_at = datetime.now(timezone.utc)
+
+        session.commit()
+
+
 def _get_existing_hashes(session: Session, candidate_hashes: set[str]) -> set[str]:
     """Return which of the candidate hashes are already in the DB (globally, not per-date)."""
     if not candidate_hashes:
@@ -87,6 +124,38 @@ def _save_articles(session: Session, articles: list[dict]) -> list[Article]:
     return saved
 
 
+_SOURCE_FETCHERS = {
+    "hn":     lambda td, _fids: fetch_hackernews(td),
+    "reddit": lambda td, _fids: asyncio.to_thread(fetch_reddit, td),
+    "arxiv":  lambda td, _fids: asyncio.to_thread(fetch_arxiv, td),
+    "rss":    lambda td, fids: asyncio.to_thread(fetch_rss, td, fids),
+}
+
+
+async def _fetch_source_safe(
+    source: str,
+    target_date: date,
+    run_id: Optional[int],
+    rss_feed_ids: Optional[set[int]],
+) -> tuple[str, list[dict], Optional[str]]:
+    """Fetch a single source with error isolation.
+
+    Returns (source, articles, error_string_or_None).
+    On failure other sources continue unaffected.
+    """
+    _upsert_task_run(run_id, source, target_date, "running")
+    try:
+        fetcher = _SOURCE_FETCHERS.get(source)
+        if fetcher is None:
+            raise ValueError(f"Unknown source: {source}")
+        articles = await fetcher(target_date, rss_feed_ids)
+        return (source, articles, None)
+    except Exception as exc:
+        logger.error("[%s][%s] Fetch failed: %s", target_date, source, exc, exc_info=True)
+        _upsert_task_run(run_id, source, target_date, "failed", error_message=str(exc))
+        return (source, [], str(exc))
+
+
 async def _run_one_date(
     target_date: date,
     run_id: Optional[int],
@@ -98,10 +167,10 @@ async def _run_one_date(
     enabled_sources: set[str],
     rss_feed_ids: Optional[set[int]],
 ) -> dict:
-    """Run the full pipeline for a single date. Returns per-date counts."""
+    """Run the full pipeline for a single date. Returns per-date counts + source_errors."""
     logger.info(f"Processing date {date_idx + 1}/{dates_total}: {target_date}")
 
-    # --- Step 1: Fetch from all sources ---
+    # --- Step 1: Fetch from all sources (fault-isolated per source) ---
     _update_progress(run_id, {
         "date_from": str(effective_from),
         "date_to":   str(effective_to),
@@ -111,15 +180,22 @@ async def _run_one_date(
         "dates_total": dates_total,
         **running_totals,
     })
-    fetch_coros = []
-    if "hn"     in enabled_sources: fetch_coros.append(fetch_hackernews(target_date))
-    if "reddit" in enabled_sources: fetch_coros.append(asyncio.to_thread(fetch_reddit, target_date))
-    if "arxiv"  in enabled_sources: fetch_coros.append(asyncio.to_thread(fetch_arxiv, target_date))
-    if "rss"    in enabled_sources: fetch_coros.append(asyncio.to_thread(fetch_rss, target_date, rss_feed_ids))
+    source_list = [s for s in ("hn", "reddit", "arxiv", "rss") if s in enabled_sources]
+    fetch_results = await asyncio.gather(*[
+        _fetch_source_safe(src, target_date, run_id, rss_feed_ids)
+        for src in source_list
+    ])
 
-    results = await asyncio.gather(*fetch_coros)
-    raw_articles = [art for sublist in results for art in sublist]
-    logger.info(f"[{target_date}] Fetched {len(raw_articles)} total raw articles")
+    # Collect results and errors
+    raw_articles: list[dict] = []
+    source_errors: dict[str, str] = {}
+    for src, articles, err in fetch_results:
+        raw_articles.extend(articles)
+        if err is not None:
+            source_errors[src] = err
+
+    logger.info(f"[{target_date}] Fetched {len(raw_articles)} total raw articles"
+                + (f" ({len(source_errors)} source(s) failed)" if source_errors else ""))
 
     # --- Step 2: Filter already-ingested ---
     _update_progress(run_id, {
@@ -140,7 +216,11 @@ async def _run_one_date(
 
         if not new_articles:
             logger.info(f"[{target_date}] No new articles to process")
-            return {"fetched": len(raw_articles), "new": 0, "saved": 0, "enriched": 0}
+            # Mark successful sources even when no new articles
+            for src in source_list:
+                if src not in source_errors:
+                    _upsert_task_run(run_id, src, target_date, "success", articles_saved=0)
+            return {"fetched": len(raw_articles), "new": 0, "saved": 0, "enriched": 0, "source_errors": source_errors}
 
         # --- Step 3: Semantic deduplication ---
         _update_progress(run_id, {
@@ -175,6 +255,14 @@ async def _run_one_date(
         saved = _save_articles(session, deduped)
         logger.info(f"[{target_date}] Saved {len(saved)} articles to database")
 
+        # Update per-source task run records with article counts
+        from collections import Counter
+        source_counts = Counter(a.source_type for a in saved)
+        for src in source_list:
+            if src not in source_errors:
+                _upsert_task_run(run_id, src, target_date, "success",
+                                 articles_saved=source_counts.get(src, 0))
+
     # --- Step 5: Enrich with Gemini (concurrent) ---
     # Build totals that include this date's contributions so enrichment progress is accurate
     current_totals = {
@@ -208,6 +296,7 @@ async def _run_one_date(
         "new":      len(new_articles),   # articles that passed the hash-exists check
         "saved":    len(saved),          # articles after semantic dedup, written to DB
         "enriched": enriched_count,
+        "source_errors": source_errors,
     }
 
 
@@ -247,11 +336,25 @@ async def run_pipeline(
 
     total_dates = len(all_dates) + len(trending_dates)
 
+    # Compute and persist total_tasks so BackfillDetail can show the task grid
+    total_tasks = len(all_dates) * len(enabled_sources) + len(trending_dates) * 2
+    if run_id is not None:
+        from sqlalchemy.orm import Session as _Session
+        from backend.db import sync_engine as _engine
+        from backend.db.models import PipelineRun as _PR
+        with _Session(_engine) as session:
+            row = session.get(_PR, run_id)
+            if row is not None:
+                row.total_tasks = total_tasks
+                session.commit()
+
     t0 = time.monotonic()
     logger.info(f"Starting pipeline for {effective_from} → {effective_to} ({len(all_dates)} day(s))"
-                + (f" + {len(trending_dates)} trending date(s)" if trending_dates else ""))
+                + (f" + {len(trending_dates)} trending date(s)" if trending_dates else "")
+                + f" · {total_tasks} total tasks")
 
     totals = {"fetched": 0, "new": 0, "saved": 0, "enriched": 0}
+    all_source_errors: dict[str, str] = {}
 
     try:
         date_sem = asyncio.Semaphore(settings.pipeline_concurrency)
@@ -264,6 +367,7 @@ async def run_pipeline(
         for _idx, day_result in sorted(date_results):
             for k in totals:
                 totals[k] += day_result.get(k, 0)
+            all_source_errors.update(day_result.get("source_errors", {}))
 
         # Trending pass: fetch HN+Reddit for yesterday/today
         async def _run_trending_with_sem(t_idx, td):
@@ -280,6 +384,7 @@ async def run_pipeline(
         for _idx, day_result in sorted(trending_results):
             for k in totals:
                 totals[k] += day_result.get(k, 0)
+            all_source_errors.update(day_result.get("source_errors", {}))
 
         result = {
             **totals,
@@ -288,7 +393,25 @@ async def run_pipeline(
             "sources_used": sorted(enabled_sources),
             "rss_feed_ids_used": sorted(rss_feed_ids) if rss_feed_ids is not None else None,
         }
-        _update_run(run_id, "success", result=result, duration_seconds=time.monotonic() - t0)
+
+        # Determine run status based on source failures and enrichment ratio
+        enrichment_ratio = totals["enriched"] / totals["saved"] if totals["saved"] > 0 else 1.0
+        error_parts: list[str] = []
+        if all_source_errors:
+            error_parts.append(f"{len(all_source_errors)} source fetch(es) failed: "
+                               + "; ".join(f"{k}: {v[:120]}" for k, v in list(all_source_errors.items())[:5]))
+        if totals["saved"] > 0 and enrichment_ratio < 0.5:
+            error_parts.append(
+                f"Enrichment mostly failed: {totals['enriched']}/{totals['saved']} articles enriched "
+                f"({enrichment_ratio:.0%})"
+            )
+
+        if error_parts:
+            error_msg = " | ".join(error_parts)
+            logger.warning(error_msg)
+            _update_run(run_id, "partial", result=result, error_message=error_msg, duration_seconds=time.monotonic() - t0)
+        else:
+            _update_run(run_id, "success", result=result, duration_seconds=time.monotonic() - t0)
         return result
 
     except asyncio.CancelledError:

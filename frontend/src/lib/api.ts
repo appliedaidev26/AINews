@@ -197,9 +197,6 @@ export interface EnrichStatus {
 export interface QueueRunResponse {
   status: string
   run_id: number
-  total_tasks: number
-  enqueued: number
-  failed_to_enqueue: number
   date_from: string
   date_to: string
   sources: string[]
@@ -227,6 +224,36 @@ export interface SourcesResponse {
     reddit: { subreddits: string[]; min_upvotes: number; configured: boolean }
     arxiv: { categories: string[]; keyword_count: number }
   }
+}
+
+// --- DLQ types ---
+export interface DlqArticle {
+  id: number
+  title: string
+  source_type: string
+  source_name: string
+  digest_date: string | null
+  ingested_at: string | null
+  is_enriched: number
+  is_vectorized: number
+  enrich_retries: number
+  original_url: string
+}
+
+export interface DlqResponse {
+  total: number
+  page: number
+  per_page: number
+  enrich_failed: number
+  vectorize_failed: number
+  articles: DlqArticle[]
+}
+
+export interface DlqRetryResponse {
+  status: string
+  enrich_reset: number
+  vectorize_reset: number
+  published: boolean
 }
 
 // --- Admin API helpers ---
@@ -339,4 +366,10 @@ export const adminApi = {
     adminFetch<{ status: string; run_id: number; source: string; date: string }>(
       'POST', `/admin/runs/${runId}/tasks/${source}/${taskDate}/retry`, key
     ),
+
+  getDlq: (key: string, page = 1, perPage = 50) =>
+    adminFetch<DlqResponse>('GET', '/admin/dlq', key, { page, per_page: perPage }),
+
+  retryDlq: (key: string) =>
+    adminFetch<DlqRetryResponse>('POST', '/admin/dlq/retry', key),
 }

@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { adminApi, PipelineRun, PipelineTaskRun, EnrichStatus } from '../lib/api'
+import { adminApi, PipelineRun, PipelineTaskRun, PipelineProgress, EnrichStatus } from '../lib/api'
 
 const STORAGE_KEY = 'ainews_admin_key'
 const POLL_MS = 3000
@@ -54,8 +54,15 @@ function formatDate(iso: string | null | undefined) {
   return new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
+function formatDuration(seconds: number | null): string {
+  if (seconds === null) return '—'
+  const m = Math.floor(seconds / 60)
+  const s = Math.floor(seconds % 60)
+  return `${m}m ${s}s`
+}
+
 // ---------------------------------------------------------------------------
-// Sub-components
+// Shared sub-components
 // ---------------------------------------------------------------------------
 
 function ProgressBar({ value, max, className = '' }: { value: number; max: number; className?: string }) {
@@ -69,6 +76,170 @@ function ProgressBar({ value, max, className = '' }: { value: number; max: numbe
     </div>
   )
 }
+
+// ---------------------------------------------------------------------------
+// In-process run view (no Cloud Tasks)
+// ---------------------------------------------------------------------------
+
+const PIPELINE_STAGES = ['fetching', 'filtering', 'deduping', 'saving', 'enriching'] as const
+const STAGE_LABELS: Record<string, string> = {
+  queued:    'Queued',
+  fetching:  'Fetching',
+  filtering: 'Filtering',
+  deduping:  'Deduplicating',
+  saving:    'Saving',
+  enriching: 'Enriching',
+}
+
+function stageIndex(stage: string | undefined): number {
+  if (!stage) return -1
+  return PIPELINE_STAGES.indexOf(stage as typeof PIPELINE_STAGES[number])
+}
+
+function InProcessView({ run, enrichStatus }: { run: PipelineRun; enrichStatus: EnrichStatus | null }) {
+  const p = run.progress as Partial<PipelineProgress>
+  const currentStageIdx = stageIndex(p.stage)
+  const isFinished = run.status === 'success' || run.status === 'failed' || run.status === 'cancelled'
+
+  return (
+    <div className="space-y-4">
+      {/* Stage stepper */}
+      <div className="border border-gray-200 rounded p-4 space-y-3">
+        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Pipeline Stages</p>
+        <div className="flex items-center gap-1">
+          {PIPELINE_STAGES.map((stage, i) => {
+            const idx = i
+            let state: 'done' | 'active' | 'pending'
+            if (isFinished) {
+              state = run.status === 'success' ? 'done' : (idx <= currentStageIdx ? 'done' : 'pending')
+            } else if (idx < currentStageIdx) {
+              state = 'done'
+            } else if (idx === currentStageIdx) {
+              state = 'active'
+            } else {
+              state = 'pending'
+            }
+
+            const bgCls = state === 'done'
+              ? 'bg-green-100 text-green-700 border-green-200'
+              : state === 'active'
+                ? 'bg-blue-100 text-blue-700 border-blue-200'
+                : 'bg-gray-50 text-gray-400 border-gray-200'
+
+            return (
+              <div key={stage} className="flex items-center gap-1 flex-1">
+                <div className={`flex-1 border rounded px-2 py-1.5 text-center text-xs font-medium ${bgCls} ${state === 'active' ? 'animate-pulse' : ''}`}>
+                  {state === 'done' && '✓ '}{STAGE_LABELS[stage]}
+                </div>
+                {i < PIPELINE_STAGES.length - 1 && (
+                  <span className="text-gray-300 text-xs shrink-0">→</span>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Date progress */}
+      {(p.dates_total ?? 0) > 0 && (
+        <div className="border border-gray-200 rounded p-4 space-y-2">
+          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Date Progress</p>
+          <ProgressBar
+            value={isFinished ? (p.dates_total ?? 0) : (p.dates_completed ?? 0)}
+            max={p.dates_total ?? 0}
+          />
+          <p className="text-sm text-gray-700">
+            {isFinished ? (
+              <span>Processed <span className="font-semibold">{p.dates_total}</span> date{(p.dates_total ?? 0) !== 1 ? 's' : ''}</span>
+            ) : (
+              <>
+                <span>Processing date </span>
+                <span className="font-semibold">{(p.dates_completed ?? 0) + 1}</span>
+                <span className="text-gray-400"> / {p.dates_total}</span>
+                {p.current_date && (
+                  <span className="ml-2 font-mono text-xs text-gray-500">({p.current_date})</span>
+                )}
+              </>
+            )}
+          </p>
+        </div>
+      )}
+
+      {/* Live counts */}
+      <div className="border border-gray-200 rounded p-4">
+        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Article Counts</p>
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+          {[
+            { label: 'Fetched',  value: isFinished ? run.result.fetched : p.fetched },
+            { label: 'New',      value: isFinished ? run.result.new : p.new },
+            { label: 'Deduped',  value: p.deduped },
+            { label: 'Saved',    value: isFinished ? run.result.saved : p.saved },
+            { label: 'Enriched', value: isFinished ? run.result.enriched : p.enriched },
+          ].map(({ label, value }) => (
+            <div key={label} className="text-center">
+              <p className="text-lg font-semibold text-gray-900">{value ?? '—'}</p>
+              <p className="text-xs text-gray-500">{label}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Sources used */}
+      {p.sources_used && p.sources_used.length > 0 && (
+        <div className="border border-gray-200 rounded p-4">
+          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Sources</p>
+          <div className="flex gap-2">
+            {p.sources_used.map(src => (
+              <span key={src} className="text-xs border border-gray-200 rounded px-2 py-0.5 text-gray-700">
+                {SOURCE_LABELS[src] ?? src}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Enrichment/vectorization status (from enrich-status endpoint) */}
+      {enrichStatus && enrichStatus.total_saved > 0 && (
+        <div className="border border-gray-200 rounded p-4 space-y-3">
+          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Enrichment & Vectorization</p>
+          <div className="space-y-2">
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-gray-600 w-32 shrink-0">Enrich (Gemini)</span>
+              <ProgressBar value={enrichStatus.enriched} max={enrichStatus.total_saved} className="flex-1" />
+              <span className="text-xs text-gray-500 w-28 text-right shrink-0">
+                {enrichStatus.enriched} / {enrichStatus.total_saved}
+              </span>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-gray-600 w-32 shrink-0">Vectorize (Vertex)</span>
+              <ProgressBar value={enrichStatus.vectorized} max={enrichStatus.total_saved} className="flex-1" />
+              <span className="text-xs text-gray-500 w-28 text-right shrink-0">
+                {enrichStatus.vectorized} / {enrichStatus.total_saved}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Error message */}
+      {run.error_message && (
+        <div className="border border-red-200 bg-red-50 rounded p-3">
+          <p className="text-xs font-semibold text-red-700 uppercase tracking-wide mb-1">Error</p>
+          <p className="text-sm text-red-600 font-mono whitespace-pre-wrap">{run.error_message}</p>
+        </div>
+      )}
+
+      {/* Duration */}
+      {isFinished && run.duration_seconds != null && (
+        <p className="text-xs text-gray-400">Completed in {formatDuration(run.duration_seconds)}</p>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Cloud Tasks run view (historical)
+// ---------------------------------------------------------------------------
 
 function OverallBar({ tasks, totalTasks }: { tasks: PipelineTaskRun[]; totalTasks: number }) {
   const done = tasks.filter(t => t.status === 'success' || t.status === 'failed' || t.status === 'cancelled').length
@@ -250,30 +421,68 @@ export function BackfillDetail() {
   const [retryingAll, setRetryingAll] = useState(false)
 
   const isActive = run?.status === 'running' || run?.status === 'queued'
+  // Legacy in-process runs: no total_tasks AND no task records — show old stepper view
+  // New in-process runs set total_tasks and create PipelineTaskRun records, so they use the task grid
+  const isLegacyInProcess = run?.total_tasks == null && tasks.length === 0
 
   const fetchData = useCallback(async () => {
     if (!adminKey || !runId) return
     try {
       const id = parseInt(runId, 10)
-      const [tasksResp, enrichResp] = await Promise.all([
-        adminApi.getRunTasks(adminKey, id),
-        adminApi.getRunEnrichStatus(adminKey, id),
-      ])
-      setRun(tasksResp.run)
-      setTasks(tasksResp.tasks)
-      setEnrichStatus(enrichResp)
+      if (isLegacyInProcess && run) {
+        // Legacy in-process: just refresh the run + enrich status (no task rows)
+        const [runResp, enrichResp] = await Promise.all([
+          adminApi.getRun(adminKey, id),
+          adminApi.getRunEnrichStatus(adminKey, id),
+        ])
+        setRun(runResp)
+        setEnrichStatus(enrichResp)
+      } else {
+        // Task-grid view (Cloud Tasks or new in-process): fetch tasks + enrich status
+        const [tasksResp, enrichResp] = await Promise.all([
+          adminApi.getRunTasks(adminKey, id),
+          adminApi.getRunEnrichStatus(adminKey, id),
+        ])
+        setRun(tasksResp.run)
+        setTasks(tasksResp.tasks)
+        setEnrichStatus(enrichResp)
+      }
       setError(null)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e))
     }
+  }, [adminKey, runId, isLegacyInProcess, run])
+
+  // Initial load — always fetch tasks to determine mode
+  useEffect(() => {
+    if (!adminKey || !runId) return
+    const id = parseInt(runId, 10)
+    let cancelled = false
+    ;(async () => {
+      try {
+        const [tasksResp, enrichResp] = await Promise.all([
+          adminApi.getRunTasks(adminKey, id),
+          adminApi.getRunEnrichStatus(adminKey, id),
+        ])
+        if (cancelled) return
+        setRun(tasksResp.run)
+        setTasks(tasksResp.tasks)
+        setEnrichStatus(enrichResp)
+        setError(null)
+      } catch (e: unknown) {
+        if (cancelled) return
+        setError(e instanceof Error ? e.message : String(e))
+      }
+    })()
+    return () => { cancelled = true }
   }, [adminKey, runId])
 
+  // Polling for active runs
   useEffect(() => {
-    fetchData()
-    if (!isActive) return
+    if (!isActive || !run) return
     const interval = setInterval(fetchData, POLL_MS)
     return () => clearInterval(interval)
-  }, [fetchData, isActive])
+  }, [fetchData, isActive, run])
 
   const handleRetryAll = async () => {
     if (!adminKey || !runId) return
@@ -331,71 +540,79 @@ export function BackfillDetail() {
       </header>
 
       <main className="max-w-5xl mx-auto px-6 py-6 space-y-4">
-        {/* Failed banner */}
-        {failedTasks.length > 0 && (
-          <div className="border border-red-200 bg-red-50 rounded p-3 flex items-center justify-between">
-            <span className="text-sm text-red-700 font-medium">
-              {failedTasks.length} task{failedTasks.length !== 1 ? 's' : ''} failed
-            </span>
-            <button
-              onClick={handleRetryAll}
-              disabled={retryingAll}
-              className="text-xs border border-red-300 text-red-700 px-3 py-1 rounded hover:bg-red-100 disabled:opacity-50"
-            >
-              {retryingAll ? 'Retrying…' : 'Retry All Failed'}
-            </button>
-          </div>
-        )}
+        {isLegacyInProcess ? (
+          /* Legacy in-process pipeline view (old runs without per-source tracking) */
+          <InProcessView run={run} enrichStatus={enrichStatus} />
+        ) : (
+          /* Cloud Tasks view (historical runs) */
+          <>
+            {/* Failed banner */}
+            {failedTasks.length > 0 && (
+              <div className="border border-red-200 bg-red-50 rounded p-3 flex items-center justify-between">
+                <span className="text-sm text-red-700 font-medium">
+                  {failedTasks.length} task{failedTasks.length !== 1 ? 's' : ''} failed
+                </span>
+                <button
+                  onClick={handleRetryAll}
+                  disabled={retryingAll}
+                  className="text-xs border border-red-300 text-red-700 px-3 py-1 rounded hover:bg-red-100 disabled:opacity-50"
+                >
+                  {retryingAll ? 'Retrying…' : 'Retry All Failed'}
+                </button>
+              </div>
+            )}
 
-        {/* Overall progress */}
-        <OverallBar tasks={tasks} totalTasks={totalTasks} />
+            {/* Overall progress */}
+            <OverallBar tasks={tasks} totalTasks={totalTasks} />
 
-        {/* Per-source bars */}
-        {tasks.length > 0 && <SourceBars tasks={tasks} />}
+            {/* Per-source bars */}
+            {tasks.length > 0 && <SourceBars tasks={tasks} />}
 
-        {/* Task grid */}
-        {tasks.length > 0 && (
-          <TaskGrid
-            tasks={tasks}
-            adminKey={adminKey}
-            runId={run.id}
-            onRetry={fetchData}
-          />
-        )}
+            {/* Task grid */}
+            {tasks.length > 0 && (
+              <TaskGrid
+                tasks={tasks}
+                adminKey={adminKey}
+                runId={run.id}
+                onRetry={fetchData}
+              />
+            )}
 
-        {/* Async pipeline status */}
-        <AsyncPipelineStatus enrichStatus={enrichStatus} />
+            {/* Async pipeline status */}
+            <AsyncPipelineStatus enrichStatus={enrichStatus} />
 
-        {/* Failed tasks detail */}
-        {failedTasks.length > 0 && (
-          <div className="border border-gray-200 rounded overflow-hidden">
-            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide px-4 pt-3 pb-2">
-              Failed Tasks
-            </p>
-            <table className="w-full text-xs">
-              <thead className="bg-gray-50 border-b border-gray-200">
-                <tr>
-                  {['Source', 'Date', 'Error', ''].map(h => (
-                    <th key={h} className="text-left px-4 py-2 text-gray-500 font-medium">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {failedTasks.map((t, i) => (
-                  <tr key={t.id} className={`border-b ${i === failedTasks.length - 1 ? 'border-transparent' : 'border-gray-100'}`}>
-                    <td className="px-4 py-2">{SOURCE_LABELS[t.source] ?? t.source}</td>
-                    <td className="px-4 py-2 font-mono">{t.date}</td>
-                    <td className="px-4 py-2 text-red-600 max-w-sm truncate" title={t.error_message ?? ''}>
-                      {t.error_message ?? '—'}
-                    </td>
-                    <td className="px-4 py-2">
-                      <RetryButton adminKey={adminKey} runId={run.id} task={t} onRetry={fetchData} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+            {/* Failed tasks detail */}
+            {failedTasks.length > 0 && (
+              <div className="border border-gray-200 rounded overflow-hidden">
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide px-4 pt-3 pb-2">
+                  Failed Tasks
+                </p>
+                <table className="w-full text-xs">
+                  <thead className="bg-gray-50 border-b border-gray-200">
+                    <tr>
+                      {['Source', 'Date', 'Error', ''].map(h => (
+                        <th key={h} className="text-left px-4 py-2 text-gray-500 font-medium">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {failedTasks.map((t, i) => (
+                      <tr key={t.id} className={`border-b ${i === failedTasks.length - 1 ? 'border-transparent' : 'border-gray-100'}`}>
+                        <td className="px-4 py-2">{SOURCE_LABELS[t.source] ?? t.source}</td>
+                        <td className="px-4 py-2 font-mono">{t.date}</td>
+                        <td className="px-4 py-2 text-red-600 max-w-sm truncate" title={t.error_message ?? ''}>
+                          {t.error_message ?? '—'}
+                        </td>
+                        <td className="px-4 py-2">
+                          <RetryButton adminKey={adminKey} runId={run.id} task={t} onRetry={fetchData} />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
         )}
       </main>
     </div>

@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, text, delete, func, or_
 
 from backend.config import settings
-from backend.db import get_db
+from backend.db import get_db, sync_engine
 from backend.db.models import Article, PipelineRun, PipelineTaskRun, RssFeed
 from backend.ingestion.pipeline import run_pipeline
 from backend.ingestion.cloud_tasks import enqueue_fetch_task
@@ -25,6 +25,65 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 # Module-level registry of live asyncio tasks keyed by run_id.
 # Works reliably on single-instance Cloud Run (min-instances=1).
 _active_tasks: dict[int, asyncio.Task] = {}
+
+
+async def _run_enrichment_task(coro, run_id: int, total_articles: int):
+    """Wrap an enrichment coroutine so it updates the PipelineRun when done."""
+    import time
+    t0 = time.monotonic()
+    try:
+        enriched = await coro
+        duration = time.monotonic() - t0
+        ratio = enriched / total_articles if total_articles > 0 else 1.0
+        if total_articles > 0 and ratio < 0.5:
+            status = "partial"
+            error_msg = f"Enrichment mostly failed: {enriched}/{total_articles} ({ratio:.0%})"
+        else:
+            status = "success"
+            error_msg = None
+        from sqlalchemy.orm import Session as _Session
+        with _Session(sync_engine) as session:
+            run = session.get(PipelineRun, run_id)
+            if run:
+                run.status = status
+                run.completed_at = datetime.now(timezone.utc)
+                run.duration_seconds = duration
+                run.error_message = error_msg
+                run.result = {"enriched": enriched, "total": total_articles}
+                session.commit()
+    except asyncio.CancelledError:
+        from sqlalchemy.orm import Session as _Session
+        with _Session(sync_engine) as session:
+            run = session.get(PipelineRun, run_id)
+            if run:
+                run.status = "cancelled"
+                run.completed_at = datetime.now(timezone.utc)
+                run.duration_seconds = time.monotonic() - t0
+                run.error_message = "Cancelled by admin"
+                session.commit()
+        raise
+    except Exception as exc:
+        from sqlalchemy.orm import Session as _Session
+        with _Session(sync_engine) as session:
+            run = session.get(PipelineRun, run_id)
+            if run:
+                run.status = "failed"
+                run.completed_at = datetime.now(timezone.utc)
+                run.duration_seconds = time.monotonic() - t0
+                run.error_message = str(exc)
+                session.commit()
+        logger.exception("Enrichment task failed for run %s", run_id)
+
+
+def _check_concurrent_limit():
+    """Raise HTTP 429 if too many pipeline runs are already active."""
+    active = sum(1 for t in _active_tasks.values() if not t.done())
+    if active >= settings.max_concurrent_runs:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many concurrent runs ({active}/{settings.max_concurrent_runs}). "
+                   f"Wait for an active run to finish or cancel one first.",
+        )
 
 
 def require_admin(x_admin_key: str = Header(...)) -> str:
@@ -47,6 +106,7 @@ async def trigger_ingest(
     key: str = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    _check_concurrent_limit()
     effective_from = date_from or target_date or date.today()
     effective_to   = date_to or effective_from
 
@@ -137,6 +197,7 @@ async def retry_failed_enrichments(
     key: str = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    _check_concurrent_limit()
     effective_from = date_from or (date.today() - timedelta(days=90))
     effective_to = date_to or date.today()
 
@@ -170,7 +231,10 @@ async def retry_failed_enrichments(
     await db.refresh(run)
 
     task = asyncio.create_task(
-        enrich_failed_articles(effective_from, effective_to, run.id)
+        _run_enrichment_task(
+            enrich_failed_articles(effective_from, effective_to, run.id),
+            run.id, article_count,
+        )
     )
     _active_tasks[run.id] = task
     task.add_done_callback(lambda _: _active_tasks.pop(run.id, None))
@@ -238,6 +302,7 @@ async def enrich_pending(
     db: AsyncSession = Depends(get_db),
 ):
     """Enrich all pending articles (is_enriched IS NULL or 0) in the optional date range."""
+    _check_concurrent_limit()
     stmt = select(func.count(Article.id)).where(
         or_(Article.is_enriched.is_(None), Article.is_enriched == 0)
     )
@@ -268,7 +333,10 @@ async def enrich_pending(
     await db.refresh(run)
 
     task = asyncio.create_task(
-        enrich_pending_articles(run_id=run.id, date_from=date_from, date_to=date_to)
+        _run_enrichment_task(
+            enrich_pending_articles(run_id=run.id, date_from=date_from, date_to=date_to),
+            run.id, article_count,
+        )
     )
     _active_tasks[run.id] = task
     task.add_done_callback(lambda _: _active_tasks.pop(run.id, None))
@@ -474,10 +542,13 @@ async def queue_run(
     date_to:      Optional[date] = Query(None, description="Range end (ISO date)"),
     triggered_by: str            = Query("api"),
     sources:      str            = Query("hn,reddit,arxiv,rss", description="Comma-separated source types"),
+    rss_feed_ids: str            = Query("", description="Comma-separated RSS feed IDs; empty means all active feeds"),
+    populate_trending: bool      = Query(False, description="Also fetch last 2 days of HN+Reddit for trending strip"),
     key: str = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create a PipelineRun and enqueue Cloud Tasks for each (source, date) combination."""
+    """Create a PipelineRun and execute the in-process pipeline."""
+    _check_concurrent_limit()
     effective_from = date_from or date.today()
     effective_to   = date_to or effective_from
 
@@ -485,90 +556,59 @@ async def queue_run(
     if not enabled_sources:
         enabled_sources = {"hn", "reddit", "arxiv", "rss"}
 
-    all_dates = [
-        effective_from + timedelta(days=i)
-        for i in range((effective_to - effective_from).days + 1)
-    ]
-    total_tasks = len(all_dates) * len(enabled_sources)
+    parsed_feed_ids: Optional[set[int]] = None
+    if rss_feed_ids.strip():
+        parsed_feed_ids = {int(i) for i in rss_feed_ids.split(",") if i.strip().isdigit()}
+
+    # Resolve feed names for the detail panel
+    rss_feed_names_used: Optional[dict] = None
+    if "rss" in enabled_sources:
+        feed_q = select(RssFeed.id, RssFeed.name)
+        if parsed_feed_ids is not None:
+            feed_q = feed_q.where(RssFeed.id.in_(parsed_feed_ids))
+        else:
+            feed_q = feed_q.where(RssFeed.is_active == True)  # noqa: E712
+        feed_rows = (await db.execute(feed_q)).all()
+        rss_feed_names_used = {row.id: row.name for row in feed_rows}
 
     run = PipelineRun(
         started_at=datetime.now(timezone.utc),
-        status="queued",
+        status="running",
         target_date=str(effective_from),
         date_to=str(effective_to),
         triggered_by=triggered_by,
-        total_tasks=total_tasks,
-        progress={"run_type": "backfill", "stage": "queued", "sources_used": sorted(enabled_sources)},
+        progress={
+            "run_type": "backfill",
+            "stage": "fetching",
+            "sources_used": sorted(enabled_sources),
+            "rss_feed_ids_used": sorted(parsed_feed_ids) if parsed_feed_ids is not None else None,
+            "rss_feed_names_used": rss_feed_names_used,
+            "populate_trending": populate_trending,
+        },
     )
     db.add(run)
     await db.commit()
     await db.refresh(run)
 
-    # If Cloud Tasks is not configured, fall back to in-process pipeline
-    cloud_tasks_available = bool(settings.gcp_project_id and settings.cloud_run_url)
-
-    if not cloud_tasks_available:
-        logger.info(
-            "queue-run: Cloud Tasks not configured — running in-process for %s → %s",
-            effective_from, effective_to,
+    task = asyncio.create_task(
+        run_pipeline(
+            date_from=effective_from,
+            date_to=effective_to,
+            run_id=run.id,
+            enabled_sources=enabled_sources,
+            rss_feed_ids=parsed_feed_ids,
+            populate_trending=populate_trending,
         )
-        run.status = "running"
-        run.total_tasks = None  # mark as legacy mode
-        run.progress = {
-            "run_type": "backfill", "stage": "fetching",
-            "sources_used": sorted(enabled_sources),
-        }
-        await db.commit()
-
-        # Match /admin/ingest pattern — run_pipeline handles its own
-        # status updates via _update_run(), no wrapper needed.
-        task = asyncio.create_task(
-            run_pipeline(
-                date_from=effective_from,
-                date_to=effective_to,
-                run_id=run.id,
-                enabled_sources=enabled_sources,
-            )
-        )
-        _active_tasks[run.id] = task
-        task.add_done_callback(lambda _: _active_tasks.pop(run.id, None))
-
-        return {
-            "status": "running",
-            "run_id": run.id,
-            "total_tasks": total_tasks,
-            "enqueued": 0,
-            "failed_to_enqueue": 0,
-            "date_from": str(effective_from),
-            "date_to": str(effective_to),
-            "sources": sorted(enabled_sources),
-        }
-
-    # Enqueue Cloud Tasks
-    enqueued = 0
-    failed = 0
-    for d in all_dates:
-        for src in sorted(enabled_sources):
-            ok = enqueue_fetch_task(run.id, src, d)
-            if ok:
-                enqueued += 1
-            else:
-                failed += 1
-
-    logger.info(
-        "queue-run: created run %s, enqueued %d tasks (%d failed) for %s → %s",
-        run.id, enqueued, failed, effective_from, effective_to,
     )
+    _active_tasks[run.id] = task
+    task.add_done_callback(lambda _: _active_tasks.pop(run.id, None))
 
     return {
-        "status": "queued",
-        "run_id": run.id,
-        "total_tasks": total_tasks,
-        "enqueued": enqueued,
-        "failed_to_enqueue": failed,
+        "status":    "running",
+        "run_id":    run.id,
         "date_from": str(effective_from),
-        "date_to": str(effective_to),
-        "sources": sorted(enabled_sources),
+        "date_to":   str(effective_to),
+        "sources":   sorted(enabled_sources),
     }
 
 
@@ -705,6 +745,127 @@ async def retry_single_task(
         "run_id": run_id,
         "source": source,
         "date": task_date,
+    }
+
+
+@router.get("/dlq")
+async def get_dlq(
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=200),
+    key: str = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """List dead-lettered articles: enrichment permanently failed (is_enriched=-1 AND retries>=3)
+    or vectorization failed (is_vectorized=-1)."""
+    from backend.api.routes.internal import ENRICH_RETRY_CAP
+
+    # Count totals
+    enrich_failed_count = (await db.execute(
+        select(func.count(Article.id)).where(
+            Article.is_enriched == -1,
+            Article.enrich_retries >= ENRICH_RETRY_CAP,
+        )
+    )).scalar() or 0
+
+    vectorize_failed_count = (await db.execute(
+        select(func.count(Article.id)).where(
+            Article.is_vectorized == -1,
+        )
+    )).scalar() or 0
+
+    # Query articles matching DLQ criteria
+    dlq_filter = or_(
+        (Article.is_enriched == -1) & (Article.enrich_retries >= ENRICH_RETRY_CAP),
+        Article.is_vectorized == -1,
+    )
+    total = (await db.execute(select(func.count(Article.id)).where(dlq_filter))).scalar() or 0
+
+    result = await db.execute(
+        select(Article)
+        .where(dlq_filter)
+        .order_by(desc(Article.ingested_at))
+        .offset((page - 1) * per_page)
+        .limit(per_page)
+    )
+    articles = result.scalars().all()
+
+    return {
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "enrich_failed": enrich_failed_count,
+        "vectorize_failed": vectorize_failed_count,
+        "articles": [
+            {
+                "id": a.id,
+                "title": a.title,
+                "source_type": a.source_type,
+                "source_name": a.source_name,
+                "digest_date": str(a.digest_date) if a.digest_date else None,
+                "ingested_at": a.ingested_at.isoformat() if a.ingested_at else None,
+                "is_enriched": a.is_enriched,
+                "is_vectorized": a.is_vectorized,
+                "enrich_retries": a.enrich_retries,
+                "original_url": a.original_url,
+            }
+            for a in articles
+        ],
+    }
+
+
+@router.post("/dlq/retry")
+async def retry_dlq(
+    key: str = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reset all DLQ articles and republish for reprocessing."""
+    from backend.api.routes.internal import ENRICH_RETRY_CAP
+
+    # Reset enrichment DLQ
+    enrich_ids_result = await db.execute(
+        select(Article.id).where(
+            Article.is_enriched == -1,
+            Article.enrich_retries >= ENRICH_RETRY_CAP,
+        )
+    )
+    enrich_ids = list(enrich_ids_result.scalars().all())
+
+    if enrich_ids:
+        await db.execute(
+            text("UPDATE articles SET is_enriched = 0, enrich_retries = 0 WHERE id = ANY(:ids)"),
+            {"ids": enrich_ids},
+        )
+
+    # Reset vectorization DLQ
+    vector_ids_result = await db.execute(
+        select(Article.id).where(Article.is_vectorized == -1)
+    )
+    vector_ids = list(vector_ids_result.scalars().all())
+
+    if vector_ids:
+        await db.execute(
+            text("UPDATE articles SET is_vectorized = 0 WHERE id = ANY(:ids)"),
+            {"ids": vector_ids},
+        )
+
+    await db.commit()
+
+    # Republish to Pub/Sub (or direct enrich in dev)
+    all_ids = list(set(enrich_ids + vector_ids))
+    published = False
+    if all_ids:
+        published = publish_articles_saved(
+            article_ids=all_ids,
+            run_id=0,
+            source="dlq_retry",
+            target_date="dlq_retry",
+        )
+
+    return {
+        "status": "retried",
+        "enrich_reset": len(enrich_ids),
+        "vectorize_reset": len(vector_ids),
+        "published": published,
     }
 
 
