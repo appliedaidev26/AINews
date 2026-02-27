@@ -1,6 +1,7 @@
 """Cloud Tasks queue helpers for fan-out ingestion."""
 import json
 import logging
+import uuid
 from datetime import date
 
 from backend.config import settings
@@ -43,11 +44,14 @@ def enqueue_fetch_task(run_id: int, source: str, target_date: date) -> bool:
             queue,
         )
 
+        # Include a short UUID to avoid collisions with Cloud Tasks' tombstone
+        # (completed task names are reserved for ~1 week and can't be reused).
+        suffix = uuid.uuid4().hex[:8]
         task_name = client.task_path(
             settings.gcp_project_id,
             settings.cloud_tasks_region,
             queue,
-            f"{source}-{run_id}-{target_date}",
+            f"{source}-{run_id}-{target_date}-{suffix}",
         )
 
         payload = json.dumps({
