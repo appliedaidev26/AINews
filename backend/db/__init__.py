@@ -25,15 +25,18 @@ async_engine = create_async_engine(
 )
 AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False, class_=AsyncSession)
 
-# Sync engine for ingestion pipeline (used in background tasks, not concurrent with API)
-# Production: 3+0=3 per instance (4 instances × 3 = 12, plus async 4×3 = 12, total 24 ≤ 25).
-# Enrichment semaphore (5) may exceed pool — that's fine, extras wait for a free connection.
+# Sync engine for ingestion pipeline (used in background tasks AND internal handlers).
+# Production: concurrent /internal/fetch-source, /internal/enrich, /internal/vectorize
+# plus /internal/finalize-runs all need sync connections simultaneously.
+# Budget: pool_size=5 + max_overflow=3 = 8 per instance. With maxScale=4: 4×8=32.
+# This exceeds 25-conn limit of db-f1-micro but max_overflow connections are short-lived
+# and Cloud Run rarely runs 4 instances at full concurrency simultaneously.
 sync_engine = create_engine(
     settings.database_url_sync,
     echo=False,
     pool_pre_ping=True,
-    pool_size=5 if _is_local_env else 3,
-    max_overflow=3 if _is_local_env else 0,
+    pool_size=5,
+    max_overflow=3,
     pool_timeout=30,
     connect_args={"connect_timeout": 10},  # psycopg2 connection-level timeout (seconds)
 )

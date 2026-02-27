@@ -276,23 +276,31 @@ async def vectorize_handler(request: Request, _: None = Depends(require_internal
 
     from backend.processing.vectorizer import upsert_article_vector
 
+    # Read article data then release connection — don't hold it during Vertex AI calls
+    with Session(sync_engine) as session:
+        rows = session.execute(
+            select(Article.id, Article.title).where(Article.id.in_(article_ids))
+        ).all()
+    article_data = [(r.id, r.title) for r in rows]
+
+    # Vectorize without holding a DB connection
+    results: dict[int, bool] = {}
+    for aid, title in article_data:
+        ok = await asyncio.to_thread(upsert_article_vector, aid, title, "")
+        results[aid] = ok
+
+    # Write statuses in a short-lived session
     success = 0
     with Session(sync_engine) as session:
-        articles = session.execute(
-            select(Article).where(Article.id.in_(article_ids))
-        ).scalars().all()
-
-        for article in articles:
-            ok = await asyncio.to_thread(
-                upsert_article_vector,
-                article.id,
-                article.title,
-                "",  # abstract not stored; title is sufficient
+        for aid, ok in results.items():
+            session.execute(
+                __import__("sqlalchemy").text(
+                    "UPDATE articles SET is_vectorized = :status WHERE id = :id"
+                ),
+                {"status": 1 if ok else -1, "id": aid},
             )
-            article.is_vectorized = 1 if ok else -1
             if ok:
                 success += 1
-
         session.commit()
 
     logger.info("vectorize: done, %d/%d succeeded", success, len(article_ids))
@@ -455,6 +463,26 @@ async def scrub_orphans(_: None = Depends(require_internal)):
             )
         ).scalars().all()
 
+        # Articles that failed vectorization — reset to pending for retry
+        # (vectorization is idempotent, failures are rare, no retry cap needed)
+        failed_vector = session.execute(
+            select(Article).where(
+                Article.is_vectorized == -1,
+                Article.ingested_at < cutoff,
+            )
+        ).scalars().all()
+
+        failed_vector_ids: list[int] = []
+        for article in failed_vector:
+            article.is_vectorized = 0
+            failed_vector_ids.append(article.id)
+        if failed_vector_ids:
+            session.commit()
+            logger.info(
+                "scrub-orphans: reset %d failed-vectorize articles to pending",
+                len(failed_vector_ids),
+            )
+
     all_enrich_ids = list(pending_enrich_ids) + retried_ids
 
     enrich_published = 0
@@ -472,22 +500,27 @@ async def scrub_orphans(_: None = Depends(require_internal)):
             enrich_published, len(pending_enrich_ids), len(retried_ids),
         )
 
+    all_vector_ids = list(pending_vector) + failed_vector_ids
     vector_published = 0
-    if pending_vector:
+    if all_vector_ids:
         ok = publish_articles_saved(
-            article_ids=list(pending_vector),
+            article_ids=all_vector_ids,
             run_id=0,
             source="scrub",
             target_date="scrub",
         )
         if ok:
-            vector_published = len(pending_vector)
-        logger.info("scrub-orphans: republished %d pending-vectorize articles", vector_published)
+            vector_published = len(all_vector_ids)
+        logger.info(
+            "scrub-orphans: republished %d vectorize articles (%d pending + %d retried)",
+            vector_published, len(pending_vector), len(failed_vector_ids),
+        )
 
     return {
         "pending_enrich": len(pending_enrich_ids),
         "failed_enrich_retried": len(retried_ids),
         "pending_vector": len(pending_vector),
+        "failed_vector_retried": len(failed_vector_ids),
         "enrich_published": enrich_published,
         "vector_published": vector_published,
     }

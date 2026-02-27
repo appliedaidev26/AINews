@@ -23,14 +23,6 @@ from backend.db.models import Article
 
 logger = logging.getLogger(__name__)
 
-# Module-level rate semaphore shared across concurrent enrich_articles() calls
-_rate_sem: Optional[asyncio.Semaphore] = None
-
-def _get_rate_sem() -> asyncio.Semaphore:
-    global _rate_sem
-    if _rate_sem is None:
-        _rate_sem = asyncio.Semaphore(5)
-    return _rate_sem
 
 ENRICHMENT_PROMPT = """You are a sharp, no-nonsense AI/ML analyst writing for smart technical readers. Your style is BowTied Bull — confident, contrarian, direct. You cut through hype and tell readers what actually matters. Dry humor welcome. No corporate-speak, no breathless enthusiasm. Assume the reader is technically competent.
 
@@ -258,6 +250,9 @@ def _enrich_one(article: Article, session: Session, use_openai: bool = False) ->
     except GeminiFatalError:
         raise  # propagate up to abort the whole run
     except Exception as exc:
+        kind = _classify_error(exc)
+        if kind in ("quota", "auth", "model_not_found"):
+            raise GeminiFatalError(f"{kind}: {exc}") from exc
         logger.error(f"Enrichment failed for article {article.id} (will skip): {exc}")
         article.is_enriched = -1
         session.commit()
@@ -356,12 +351,14 @@ async def enrich_articles(
 
     lock = asyncio.Lock()
     enriched_count = 0
+    consecutive_failures = 0
     abort_flag = asyncio.Event()
 
-    sem = _get_rate_sem()
+    # Per-call semaphore — isolated from other concurrent enrich_articles() calls
+    sem = asyncio.Semaphore(settings.enrichment_concurrency)
 
     async def _track(article_id: int) -> bool:
-        nonlocal enriched_count
+        nonlocal enriched_count, consecutive_failures
         if abort_flag.is_set():
             return False
 
@@ -387,24 +384,47 @@ async def enrich_articles(
                 return False
             except Exception as exc:
                 logger.error(f"Unexpected error enriching article {article_id}: {exc}")
-                return False
+                ok = False
 
             await asyncio.sleep(rate_interval)
 
         if ok:
             async with lock:
                 enriched_count += 1
+                consecutive_failures = 0
                 _update_progress_enriching(
                     run_id, target_date, date_idx, dates_total,
                     running_totals, enriched_count, len(all_ids),
                 )
             logger.info(f"Enriched article {article_id} ({enriched_count}/{len(all_ids)})")
+        else:
+            async with lock:
+                consecutive_failures += 1
+                if consecutive_failures >= 5 and not abort_flag.is_set():
+                    logger.error(
+                        f"Enrichment aborted — {consecutive_failures} consecutive failures "
+                        f"(possible network outage or degraded service)"
+                    )
+                    abort_flag.set()
         return bool(ok)
 
-    results = await asyncio.gather(
-        *[_track(aid) for aid in all_ids],
-        return_exceptions=True,
-    )
+    # Timeout watchdog — abort if enrichment exceeds the configured limit
+    async def _timeout_watchdog():
+        await asyncio.sleep(settings.enrichment_timeout_seconds)
+        if not abort_flag.is_set():
+            logger.error(
+                f"Enrichment aborted — timeout after {settings.enrichment_timeout_seconds}s"
+            )
+            abort_flag.set()
+
+    watchdog = asyncio.create_task(_timeout_watchdog())
+    try:
+        results = await asyncio.gather(
+            *[_track(aid) for aid in all_ids],
+            return_exceptions=True,
+        )
+    finally:
+        watchdog.cancel()
 
     enriched_ids = [
         aid for aid, res in zip(all_ids, results)

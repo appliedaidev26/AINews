@@ -39,7 +39,12 @@ class Settings(BaseSettings):
 
     # Enrichment
     enrichment_batch_size: int = 10
-    enrichment_rate_rpm: int = 240   # 4 req/s
+    enrichment_rate_rpm: int = 60    # 1 req/s (safe for free tier; paid users override via env)
+    enrichment_concurrency: int = 3  # max concurrent Gemini calls per enrich_articles() invocation
+    enrichment_timeout_seconds: int = 1800  # 30 min max, then abort
+
+    # Pipeline
+    max_concurrent_runs: int = 2     # reject new runs if this many are active
 
     # Pipeline
     pipeline_concurrency: int = 2    # max dates processed in parallel

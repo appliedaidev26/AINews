@@ -260,7 +260,17 @@ export interface DlqRetryResponse {
 async function adminFetch<T>(method: string, path: string, key: string, params?: Record<string, string | number>): Promise<T> {
   const url = new URL(BASE + path, window.location.origin)
   if (params) Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, String(v)))
-  const res = await fetch(url.toString(), { method, headers: { 'X-Admin-Key': key } })
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 30_000)
+  let res: Response
+  try {
+    res = await fetch(url.toString(), { method, headers: { 'X-Admin-Key': key }, signal: controller.signal })
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') throw new Error('Request timed out — server may be starting up. Try again.')
+    throw err
+  } finally {
+    clearTimeout(timeout)
+  }
   if (res.status === 403) throw new Error('ADMIN_FORBIDDEN')
   if (!res.ok) throw new Error(`API error ${res.status}`)
   return res.json()

@@ -924,8 +924,9 @@ export function Admin() {
               disabled={loading || !keyInput.trim()}
               className="w-full bg-indigo-600 text-white text-sm py-2 rounded hover:bg-indigo-700 disabled:opacity-50"
             >
-              {loading ? 'Checking...' : 'Sign in'}
+              {loading ? 'Connecting to server...' : 'Sign in'}
             </button>
+            {loading && <p className="text-xs text-gray-400 text-center">First request may take 10-20s if server is cold-starting.</p>}
           </form>
         </div>
       </div>
