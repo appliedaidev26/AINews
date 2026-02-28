@@ -291,20 +291,34 @@ function TaskGrid({
   tasks,
   adminKey,
   runId,
+  dateFrom,
+  dateTo,
   onRetry,
 }: {
   tasks: PipelineTaskRun[]
   adminKey: string
   runId: number
+  dateFrom: string
+  dateTo: string
   onRetry: () => void
 }) {
   const [retrying, setRetrying] = useState<string | null>(null)
   const [optimistic, setOptimistic] = useState<Record<string, TaskStatus>>({})
 
   const dates = useMemo(() => {
-    const ds = [...new Set(tasks.map(t => t.date))].sort()
+    // Generate all dates in the run's range, not just dates with task records
+    const ds: string[] = []
+    const start = new Date(dateFrom + 'T00:00:00')
+    const end = new Date(dateTo + 'T00:00:00')
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+      ds.push(d.toISOString().slice(0, 10))
+    }
+    // If no range dates (e.g. single-date run), fall back to task record dates
+    if (ds.length === 0) {
+      return [...new Set(tasks.map(t => t.date))].sort()
+    }
     return ds
-  }, [tasks])
+  }, [dateFrom, dateTo, tasks])
 
   const byKey = useMemo(() => {
     const m: Record<string, PipelineTaskRun> = {}
@@ -562,6 +576,33 @@ export function BackfillDetail() {
               </div>
             )}
 
+            {/* Live progress (in-process runs with progress data) */}
+            {run.progress?.stage && (
+              <div className="border border-gray-200 rounded p-4 space-y-2">
+                <div className="flex items-center gap-4">
+                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Pipeline Progress</p>
+                  <span className="text-xs border border-blue-200 bg-blue-50 text-blue-700 rounded px-2 py-0.5 font-medium">
+                    {STAGE_LABELS[run.progress.stage] ?? run.progress.stage}
+                    {run.progress.current_date && <span className="ml-1 font-mono text-blue-500">({run.progress.current_date})</span>}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mt-2">
+                  {[
+                    { label: 'Fetched',  value: run.progress.fetched },
+                    { label: 'New',      value: run.progress.new },
+                    { label: 'Saved',    value: run.progress.saved },
+                    { label: 'Enriched', value: run.progress.enriched },
+                    { label: 'Dates',    value: `${run.progress.dates_completed ?? 0}/${run.progress.dates_total ?? '?'}` },
+                  ].map(({ label, value }) => (
+                    <div key={label} className="text-center">
+                      <p className="text-lg font-semibold text-gray-900">{value ?? '—'}</p>
+                      <p className="text-xs text-gray-500">{label}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Overall progress */}
             <OverallBar tasks={tasks} totalTasks={totalTasks} />
 
@@ -569,17 +610,25 @@ export function BackfillDetail() {
             {tasks.length > 0 && <SourceBars tasks={tasks} />}
 
             {/* Task grid */}
-            {tasks.length > 0 && (
-              <TaskGrid
-                tasks={tasks}
-                adminKey={adminKey}
-                runId={run.id}
-                onRetry={fetchData}
-              />
-            )}
+            <TaskGrid
+              tasks={tasks}
+              adminKey={adminKey}
+              runId={run.id}
+              dateFrom={dateFrom}
+              dateTo={dateTo}
+              onRetry={fetchData}
+            />
 
             {/* Async pipeline status */}
             <AsyncPipelineStatus enrichStatus={enrichStatus} />
+
+            {/* Run-level error message */}
+            {run.error_message && (
+              <div className="border border-red-200 bg-red-50 rounded p-3">
+                <p className="text-xs font-semibold text-red-700 uppercase tracking-wide mb-1">Error</p>
+                <p className="text-sm text-red-600 font-mono whitespace-pre-wrap">{run.error_message}</p>
+              </div>
+            )}
 
             {/* Failed tasks detail */}
             {failedTasks.length > 0 && (

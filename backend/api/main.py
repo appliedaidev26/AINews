@@ -51,14 +51,12 @@ async def _cleanup_orphaned_runs() -> None:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     async with AsyncSession(async_engine) as session:
-        # Only mark legacy "running" runs as failed on restart (not Cloud Tasks "queued" runs
-        # which are managed externally and don't depend on server process continuity).
+        # Mark all "running" in-process runs as failed on restart.
+        # Cloud Tasks runs use status="queued" (managed externally by finalize-runs),
+        # so status="running" always means an in-process asyncio pipeline that died.
         result = await session.execute(
             sa_update(PipelineRun)
-            .where(
-                PipelineRun.status == "running",
-                PipelineRun.total_tasks.is_(None),  # legacy asyncio mode only
-            )
+            .where(PipelineRun.status == "running")
             .values(
                 status="failed",
                 completed_at=datetime.now(timezone.utc),
