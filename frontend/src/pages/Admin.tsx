@@ -1333,6 +1333,49 @@ export function Admin() {
                     })}
                   </div>
                 )}
+
+                {/* Pipeline Health */}
+                {statsData.total > 0 && (
+                  <div className="border-t border-gray-100 pt-4 space-y-3">
+                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Pipeline Health</p>
+                    <div className="grid grid-cols-2 gap-4">
+                      {/* Enrichment */}
+                      <div className="space-y-1.5">
+                        <p className="text-xs font-medium text-gray-600">Enrichment</p>
+                        {([
+                          { label: 'Enriched', value: statsData.pipeline.enriched, color: 'bg-emerald-500', text: 'text-emerald-700' },
+                          { label: 'Pending', value: statsData.pipeline.enrich_pending, color: 'bg-amber-400', text: 'text-amber-700' },
+                          { label: 'Failed', value: statsData.pipeline.enrich_failed, color: 'bg-red-500', text: 'text-red-700' },
+                        ]).map(({ label, value, color, text }) => (
+                          <div key={label} className="flex items-center gap-2 text-xs">
+                            <span className="w-16 text-right text-gray-500">{label}</span>
+                            <div className="flex-1 bg-gray-100 rounded h-4 overflow-hidden">
+                              <div className={`${color} h-full rounded transition-all`} style={{ width: `${statsData.total > 0 ? Math.max((value / statsData.total) * 100, value > 0 ? 0.5 : 0) : 0}%` }} />
+                            </div>
+                            <span className={`w-16 font-medium ${value > 0 ? text : 'text-gray-400'}`}>{value.toLocaleString()}</span>
+                          </div>
+                        ))}
+                      </div>
+                      {/* Vectorization */}
+                      <div className="space-y-1.5">
+                        <p className="text-xs font-medium text-gray-600">Vectorization</p>
+                        {([
+                          { label: 'Vectorized', value: statsData.pipeline.vectorized, color: 'bg-emerald-500', text: 'text-emerald-700' },
+                          { label: 'Pending', value: statsData.pipeline.vectorize_pending, color: 'bg-amber-400', text: 'text-amber-700' },
+                          { label: 'Failed', value: statsData.pipeline.vectorize_failed, color: 'bg-red-500', text: 'text-red-700' },
+                        ]).map(({ label, value, color, text }) => (
+                          <div key={label} className="flex items-center gap-2 text-xs">
+                            <span className="w-16 text-right text-gray-500">{label}</span>
+                            <div className="flex-1 bg-gray-100 rounded h-4 overflow-hidden">
+                              <div className={`${color} h-full rounded transition-all`} style={{ width: `${statsData.total > 0 ? Math.max((value / statsData.total) * 100, value > 0 ? 0.5 : 0) : 0}%` }} />
+                            </div>
+                            <span className={`w-16 font-medium ${value > 0 ? text : 'text-gray-400'}`}>{value.toLocaleString()}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
               </>
             ) : (
               <p className="text-sm text-gray-400">Loading statistics…</p>

@@ -257,9 +257,18 @@ export interface DlqRetryResponse {
 }
 
 // --- Stats types ---
+export interface PipelineHealth {
+  enriched: number
+  enrich_pending: number
+  enrich_failed: number
+  vectorized: number
+  vectorize_pending: number
+  vectorize_failed: number
+}
 export interface StatsResponse {
   total: number
   by_source: Record<string, number>
+  pipeline: PipelineHealth
   filters: { month: number | null; year: number | null }
 }
 

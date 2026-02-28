@@ -900,18 +900,45 @@ async def get_stats(
     db: AsyncSession = Depends(get_db),
 ):
     """Return article counts grouped by source_type, with optional month/year filters."""
-    stmt = select(Article.source_type, func.count(Article.id).label("cnt")).group_by(Article.source_type)
+    date_filter = []
     if year is not None:
-        stmt = stmt.where(func.extract("year", Article.digest_date) == year)
+        date_filter.append(func.extract("year", Article.digest_date) == year)
     if month is not None and year is not None:
-        stmt = stmt.where(func.extract("month", Article.digest_date) == month)
+        date_filter.append(func.extract("month", Article.digest_date) == month)
 
+    # Source breakdown
+    stmt = select(Article.source_type, func.count(Article.id).label("cnt")).group_by(Article.source_type)
+    for f in date_filter:
+        stmt = stmt.where(f)
     rows = (await db.execute(stmt)).all()
     by_source = {row.source_type: row.cnt for row in rows}
     total = sum(by_source.values())
+
+    # Pipeline health breakdown
+    pipeline_stmt = select(
+        func.count(Article.id).label("total"),
+        func.count(Article.id).filter(Article.is_enriched == 1).label("enriched"),
+        func.count(Article.id).filter(Article.is_enriched == 0).label("enrich_pending"),
+        func.count(Article.id).filter(Article.is_enriched == -1).label("enrich_failed"),
+        func.count(Article.id).filter(Article.is_vectorized == 1).label("vectorized"),
+        func.count(Article.id).filter(Article.is_vectorized == 0).label("vectorize_pending"),
+        func.count(Article.id).filter(Article.is_vectorized == -1).label("vectorize_failed"),
+    )
+    for f in date_filter:
+        pipeline_stmt = pipeline_stmt.where(f)
+    p = (await db.execute(pipeline_stmt)).mappings().one()
+
     return {
         "total": total,
         "by_source": by_source,
+        "pipeline": {
+            "enriched": p["enriched"],
+            "enrich_pending": p["enrich_pending"],
+            "enrich_failed": p["enrich_failed"],
+            "vectorized": p["vectorized"],
+            "vectorize_pending": p["vectorize_pending"],
+            "vectorize_failed": p["vectorize_failed"],
+        },
         "filters": {"month": month, "year": year},
     }
 
