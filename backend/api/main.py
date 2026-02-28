@@ -1,4 +1,5 @@
 """FastAPI application entry point."""
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -75,8 +76,13 @@ async def _cleanup_orphaned_runs() -> None:
 async def lifespan(app: FastAPI):
     logger.info("Starting up — creating tables if needed")
     try:
-        await create_tables()
-        await _cleanup_orphaned_runs()
+        # Timeout DB init so uvicorn starts accepting connections quickly.
+        # Cloud SQL proxy sidecar may not be ready yet; if so, DB-backed
+        # routes will work once the proxy is up (pool_pre_ping handles reconnect).
+        await asyncio.wait_for(create_tables(), timeout=10)
+        await asyncio.wait_for(_cleanup_orphaned_runs(), timeout=10)
+    except asyncio.TimeoutError:
+        logger.warning("Startup DB init timed out (non-fatal) — Cloud SQL proxy may still be starting")
     except Exception as exc:
         # Don't crash on startup if DB is temporarily unavailable.
         # The app will still serve /health; DB-backed routes will fail until DB recovers.

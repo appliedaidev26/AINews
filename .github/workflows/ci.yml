@@ -99,7 +99,6 @@ jobs:
           flags: >-
             --add-cloudsql-instances=${{ vars.GCP_PROJECT_ID }}:${{ vars.GCP_REGION }}:ainews-db
             --cpu-boost
-            --startup-cpu-boost
           env_vars: |
             DATABASE_URL=${{ secrets.DATABASE_URL }}
             DATABASE_URL_SYNC=${{ secrets.DATABASE_URL_SYNC }}
