@@ -14,6 +14,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select, func
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from backend.config import settings
@@ -103,16 +104,25 @@ def _get_existing_hashes(candidate_hashes: set[str]) -> set[str]:
 
 
 def _save_articles(articles: list[dict]) -> list[int]:
-    """Insert articles; returns list of new article IDs."""
+    """Insert articles; returns list of new article IDs.
+
+    Uses ON CONFLICT DO NOTHING to handle race conditions where the same
+    dedup_hash is inserted by concurrent requests.
+    """
+    if not articles:
+        return []
+    values = []
+    for art in articles:
+        art.pop("_abstract", None)
+        values.append(art)
     with Session(sync_engine) as session:
-        objs = []
-        for art in articles:
-            art.pop("_abstract", None)
-            obj = Article(**art)
-            session.add(obj)
-            objs.append(obj)
-        session.flush()  # assigns IDs without committing
-        saved_ids = [obj.id for obj in objs]
+        stmt = (
+            pg_insert(Article)
+            .values(values)
+            .on_conflict_do_nothing(index_elements=["dedup_hash"])
+            .returning(Article.id)
+        )
+        saved_ids = list(session.execute(stmt).scalars().all())
         session.commit()
     return saved_ids
 

@@ -8,6 +8,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from backend.config import settings
 from backend.db import sync_engine
@@ -110,17 +111,18 @@ def _get_existing_hashes(session: Session, candidate_hashes: set[str]) -> set[st
 
 
 def _save_articles(session: Session, articles: list[dict]) -> list[Article]:
-    """Persist new article records, skip duplicates."""
-    saved = []
+    """Persist new article records, skip duplicates via ON CONFLICT DO NOTHING."""
+    if not articles:
+        return []
+    values = []
     for art in articles:
-        extra = art.pop("_abstract", None)  # don't store raw abstract
-        obj = Article(**art)
-        session.add(obj)
-        saved.append(obj)
+        art.pop("_abstract", None)  # don't store raw abstract
+        values.append(art)
+    stmt = pg_insert(Article).values(values).on_conflict_do_nothing(index_elements=["dedup_hash"])
+    stmt = stmt.returning(Article)
+    result = session.execute(stmt)
+    saved = list(result.scalars().all())
     session.commit()
-    # Refresh to get IDs
-    for obj in saved:
-        session.refresh(obj)
     return saved
 
 
