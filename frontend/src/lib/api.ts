@@ -256,6 +256,13 @@ export interface DlqRetryResponse {
   published: boolean
 }
 
+// --- Stats types ---
+export interface StatsResponse {
+  total: number
+  by_source: Record<string, number>
+  filters: { month: number | null; year: number | null }
+}
+
 // --- Admin API helpers ---
 async function adminFetch<T>(method: string, path: string, key: string, params?: Record<string, string | number>): Promise<T> {
   const url = new URL(BASE + path, window.location.origin)
@@ -376,6 +383,12 @@ export const adminApi = {
     adminFetch<{ status: string; run_id: number; source: string; date: string }>(
       'POST', `/admin/runs/${runId}/tasks/${source}/${taskDate}/retry`, key
     ),
+
+  getStats: (key: string, month?: number, year?: number) =>
+    adminFetch<StatsResponse>('GET', '/admin/stats', key, {
+      ...(month != null ? { month } : {}),
+      ...(year  != null ? { year }  : {}),
+    }),
 
   getDlq: (key: string, page = 1, perPage = 50) =>
     adminFetch<DlqResponse>('GET', '/admin/dlq', key, { page, per_page: perPage }),

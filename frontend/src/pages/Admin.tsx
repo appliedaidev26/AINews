@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { adminApi, type PipelineRun, type PipelineStage, type RunType, type CoverageDay, type RssFeed, type SourcesResponse, type DlqResponse } from '../lib/api'
+import { adminApi, type PipelineRun, type PipelineStage, type RunType, type CoverageDay, type RssFeed, type SourcesResponse, type DlqResponse, type StatsResponse } from '../lib/api'
 
 const STORAGE_KEY = 'ainews_admin_key'
 
@@ -662,6 +662,11 @@ export function Admin() {
   const [dlqData, setDlqData] = useState<DlqResponse | null>(null)
   const [dlqRetrying, setDlqRetrying] = useState(false)
 
+  // Stats state
+  const [statsData, setStatsData] = useState<StatsResponse | null>(null)
+  const [statsMonth, setStatsMonth] = useState<number | undefined>(undefined)
+  const [statsYear, setStatsYear] = useState<number | undefined>(undefined)
+
   // Run History expand state
   const [expandedRunId, setExpandedRunId] = useState<number | null>(null)
 
@@ -781,6 +786,12 @@ export function Admin() {
     const iv = setInterval(loadDlq, POLL_COVERAGE_MS)
     return () => clearInterval(iv)
   }, [isAuthenticated, key])
+
+  // Load stats (re-fetches when month/year filter changes)
+  useEffect(() => {
+    if (!isAuthenticated) return
+    adminApi.getStats(key, statsMonth, statsYear).then(setStatsData).catch(() => {})
+  }, [isAuthenticated, key, statsMonth, statsYear])
 
   function handleDateFromChange(val: string) {
     setDateFrom(val)
@@ -1249,6 +1260,85 @@ export function Admin() {
             </div>
           </section>
         )}
+
+        {/* Article Statistics */}
+        <section>
+          <p className="section-heading">Article Statistics</p>
+          <div className="border border-gray-200 rounded p-4 space-y-4">
+            {/* Time filter row */}
+            <div className="flex gap-3 items-center">
+              <select
+                value={statsMonth ?? ''}
+                onChange={e => setStatsMonth(e.target.value ? Number(e.target.value) : undefined)}
+                className="text-sm border border-gray-200 rounded px-2 py-1.5 focus:border-indigo-600 focus:outline-none"
+              >
+                <option value="">All Months</option>
+                {['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'].map((m, i) => (
+                  <option key={i + 1} value={i + 1}>{m}</option>
+                ))}
+              </select>
+              <select
+                value={statsYear ?? ''}
+                onChange={e => setStatsYear(e.target.value ? Number(e.target.value) : undefined)}
+                className="text-sm border border-gray-200 rounded px-2 py-1.5 focus:border-indigo-600 focus:outline-none"
+              >
+                <option value="">All Years</option>
+                {Array.from({ length: 3 }, (_, i) => new Date().getFullYear() - i).map(y => (
+                  <option key={y} value={y}>{y}</option>
+                ))}
+              </select>
+            </div>
+
+            {statsData ? (
+              <>
+                {/* Summary cards */}
+                <div className="flex gap-3 flex-wrap">
+                  <div className="border border-gray-200 rounded p-3 min-w-[100px] text-center">
+                    <p className="text-2xl font-semibold text-indigo-600">{statsData.total.toLocaleString()}</p>
+                    <p className="text-xs text-gray-500">Total Articles</p>
+                  </div>
+                  {(['hn', 'reddit', 'arxiv', 'rss'] as const).map(src => {
+                    const count = statsData.by_source[src] ?? 0
+                    const pct = statsData.total > 0 ? ((count / statsData.total) * 100).toFixed(1) : '0.0'
+                    const colors: Record<string, string> = { hn: 'text-orange-600', reddit: 'text-blue-600', arxiv: 'text-green-600', rss: 'text-purple-600' }
+                    return (
+                      <div key={src} className="border border-gray-200 rounded p-3 min-w-[100px] text-center">
+                        <p className={`text-2xl font-semibold ${colors[src]}`}>{count.toLocaleString()}</p>
+                        <p className="text-xs text-gray-500 capitalize">{src === 'hn' ? 'Hacker News' : src} · {pct}%</p>
+                      </div>
+                    )
+                  })}
+                </div>
+
+                {/* Horizontal bar chart */}
+                {statsData.total > 0 && (
+                  <div className="space-y-2">
+                    {([
+                      { key: 'hn', label: 'HN', color: 'bg-orange-500' },
+                      { key: 'reddit', label: 'Reddit', color: 'bg-blue-500' },
+                      { key: 'arxiv', label: 'Arxiv', color: 'bg-green-500' },
+                      { key: 'rss', label: 'RSS', color: 'bg-purple-500' },
+                    ] as const).map(({ key: src, label, color }) => {
+                      const count = statsData.by_source[src] ?? 0
+                      const pct = (count / statsData.total) * 100
+                      return (
+                        <div key={src} className="flex items-center gap-2 text-xs">
+                          <span className="w-14 text-right text-gray-500">{label}</span>
+                          <div className="flex-1 bg-gray-100 rounded h-5 overflow-hidden">
+                            <div className={`${color} h-full rounded transition-all`} style={{ width: `${Math.max(pct, 0.5)}%` }} />
+                          </div>
+                          <span className="w-16 text-gray-600">{count.toLocaleString()}</span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </>
+            ) : (
+              <p className="text-sm text-gray-400">Loading statistics…</p>
+            )}
+          </div>
+        </section>
 
         {/* Sources panel */}
         <SourcesPanel adminKey={key} />

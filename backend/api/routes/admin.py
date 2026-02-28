@@ -892,6 +892,30 @@ async def clear_db(
     }
 
 
+@router.get("/stats")
+async def get_stats(
+    month: Optional[int] = Query(None, ge=1, le=12),
+    year: Optional[int] = Query(None),
+    key: str = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return article counts grouped by source_type, with optional month/year filters."""
+    stmt = select(Article.source_type, func.count(Article.id).label("cnt")).group_by(Article.source_type)
+    if year is not None:
+        stmt = stmt.where(func.extract("year", Article.digest_date) == year)
+    if month is not None and year is not None:
+        stmt = stmt.where(func.extract("month", Article.digest_date) == month)
+
+    rows = (await db.execute(stmt)).all()
+    by_source = {row.source_type: row.cnt for row in rows}
+    total = sum(by_source.values())
+    return {
+        "total": total,
+        "by_source": by_source,
+        "filters": {"month": month, "year": year},
+    }
+
+
 @router.delete("/sources/rss/{feed_id}")
 async def delete_rss_feed(
     feed_id: int,
