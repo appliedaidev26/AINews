@@ -15,7 +15,7 @@ router = APIRouter(prefix="/digest", tags=["digest"])
 async def _get_digest(digest_date: date, category: Optional[str], db: AsyncSession) -> dict:
     stmt = select(Article).where(
         Article.digest_date == digest_date,
-        Article.is_enriched >= 0,
+        Article.is_enriched == 1,
     )
     if category:
         stmt = stmt.where(Article.category == category)
@@ -28,7 +28,7 @@ async def _get_digest(digest_date: date, category: Optional[str], db: AsyncSessi
     # Category breakdown counts
     cat_stmt = select(Article.category, func.count(Article.id)).where(
         Article.digest_date == digest_date,
-        Article.is_enriched >= 0,
+        Article.is_enriched == 1,
     ).group_by(Article.category)
     cat_result = await db.execute(cat_stmt)
     categories = {row[0]: row[1] for row in cat_result.all() if row[0]}

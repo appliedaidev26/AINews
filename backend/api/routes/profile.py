@@ -94,7 +94,7 @@ async def get_personalized_feed(
         .where(
             func.coalesce(cast(Article.published_at, SADate), Article.digest_date) >= effective_from,
             func.coalesce(cast(Article.published_at, SADate), Article.digest_date) <= effective_to,
-            or_(Article.is_enriched.is_(None), Article.is_enriched >= 0),  # exclude -1 failed; include NULL
+            Article.is_enriched == 1,  # only show fully enriched articles
         )
     )
 

@@ -27,7 +27,7 @@ async def list_articles(
     db: AsyncSession = Depends(get_db),
 ):
     stmt = select(Article).where(
-        or_(Article.is_enriched.is_(None), Article.is_enriched >= 0)  # exclude -1 failed; include NULL (pending, not yet marked)
+        Article.is_enriched == 1  # only show fully enriched articles
     )
 
     if digest_date:
@@ -99,7 +99,7 @@ async def get_trending_articles(
         .where(
             and_(
                 func.coalesce(Article.published_at, Article.ingested_at) >= cutoff,
-                or_(Article.is_enriched.is_(None), Article.is_enriched >= 0),
+                Article.is_enriched == 1,
             )
         )
         .order_by(desc(trending_score))
