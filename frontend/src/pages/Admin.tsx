@@ -4,10 +4,10 @@ import { adminApi, type PipelineRun, type PipelineStage, type RunType, type Cove
 
 const STORAGE_KEY = 'ainews_admin_key'
 
-const ALL_SOURCES = ['hn', 'reddit', 'arxiv'] as const
+const ALL_SOURCES = ['hn', 'reddit', 'arxiv', 'grok'] as const
 type SourceKey = typeof ALL_SOURCES[number]
 const SOURCE_LABELS: Record<SourceKey, string> = {
-  hn: 'Hacker News', reddit: 'Reddit', arxiv: 'Arxiv',
+  hn: 'Hacker News', reddit: 'Reddit', arxiv: 'Arxiv', grok: 'Grok',
 }
 const POLL_RUNS_MS     = 15_000   // refresh full list every 15s
 const POLL_RUN_MS      = 3_000    // poll active run every 3s for progress
@@ -15,7 +15,7 @@ const POLL_COVERAGE_MS = 60_000   // refresh coverage every 60s
 
 const STAGE_LABELS: Record<PipelineStage, string> = {
   queued:    'Queued — waiting to start…',
-  fetching:  'Fetching articles from HN, Reddit, Arxiv, RSS…',
+  fetching:  'Fetching articles from HN, Reddit, Arxiv, RSS, Grok…',
   filtering: 'Filtering already-seen articles…',
   deduping:  'Deduplicating similar articles…',
   saving:    'Saving to database…',
@@ -1309,10 +1309,10 @@ export function Admin() {
                     <p className="text-2xl font-semibold text-indigo-600">{statsData.total.toLocaleString()}</p>
                     <p className="text-xs text-gray-500">Total Articles</p>
                   </div>
-                  {(['hn', 'reddit', 'arxiv', 'rss'] as const).map(src => {
+                  {(['hn', 'reddit', 'arxiv', 'rss', 'grok'] as const).map(src => {
                     const count = statsData.by_source[src] ?? 0
                     const pct = statsData.total > 0 ? ((count / statsData.total) * 100).toFixed(1) : '0.0'
-                    const colors: Record<string, string> = { hn: 'text-orange-600', reddit: 'text-blue-600', arxiv: 'text-green-600', rss: 'text-purple-600' }
+                    const colors: Record<string, string> = { hn: 'text-orange-600', reddit: 'text-blue-600', arxiv: 'text-green-600', rss: 'text-purple-600', grok: 'text-cyan-600' }
                     return (
                       <div key={src} className="border border-gray-200 rounded p-3 min-w-[100px] text-center">
                         <p className={`text-2xl font-semibold ${colors[src]}`}>{count.toLocaleString()}</p>
@@ -1330,6 +1330,7 @@ export function Admin() {
                       { key: 'reddit', label: 'Reddit', color: 'bg-blue-500' },
                       { key: 'arxiv', label: 'Arxiv', color: 'bg-green-500' },
                       { key: 'rss', label: 'RSS', color: 'bg-purple-500' },
+                      { key: 'grok', label: 'Grok', color: 'bg-cyan-500' },
                     ] as const).map(({ key: src, label, color }) => {
                       const count = statsData.by_source[src] ?? 0
                       const pct = (count / statsData.total) * 100
