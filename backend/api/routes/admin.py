@@ -452,6 +452,12 @@ async def get_sources(
                 "categories": ARXIV_CATEGORIES,
                 "keyword_count": len(ARXIV_KEYWORDS),
             },
+            "grok": {
+                "model": settings.xai_model,
+                "queries_per_run": settings.xai_queries_per_run,
+                "min_engagement": settings.xai_min_engagement,
+                "configured": bool(settings.xai_api_key),
+            },
         },
     }
 

@@ -223,6 +223,7 @@ export interface SourcesResponse {
     hackernews: { min_score: number; keyword_count: number }
     reddit: { subreddits: string[]; min_upvotes: number; configured: boolean }
     arxiv: { categories: string[]; keyword_count: number }
+    grok: { model: string; queries_per_run: number; min_engagement: number; configured: boolean }
   }
 }
 

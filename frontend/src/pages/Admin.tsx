@@ -293,8 +293,8 @@ function SourcesPanel({ adminKey }: { adminKey: string }) {
         <p className="text-sm text-gray-400">Loading…</p>
       ) : (
         <>
-          {/* Top row: HN, Reddit, Arxiv cards */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {/* Top row: HN, Reddit, Arxiv, Grok cards */}
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
             {/* Hacker News */}
             <div className="border border-gray-200 rounded p-3">
               <div className="flex items-center justify-between mb-2">
@@ -341,6 +341,25 @@ function SourcesPanel({ adminKey }: { adminKey: string }) {
                     ))}
                   </div>
                   <p className="text-xs text-gray-500">Keywords: <span className="font-medium text-gray-700">{ro.arxiv.keyword_count}</span></p>
+                </>
+              )}
+            </div>
+
+            {/* Grok (xAI) */}
+            <div className="border border-gray-200 rounded p-3">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-xs font-medium text-gray-700">Grok / X</p>
+                {ro && (
+                  ro.grok.configured
+                    ? <span className="text-xs px-1.5 py-0.5 rounded bg-green-50 text-green-700 border border-green-200">configured</span>
+                    : <span className="text-xs px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">no API key</span>
+                )}
+              </div>
+              {ro && (
+                <>
+                  <p className="text-xs text-gray-500">Model: <span className="font-medium text-gray-700">{ro.grok.model}</span></p>
+                  <p className="text-xs text-gray-500">Queries/run: <span className="font-medium text-gray-700">{ro.grok.queries_per_run}</span></p>
+                  <p className="text-xs text-gray-500">Min engagement: <span className="font-medium text-gray-700">{ro.grok.min_engagement.toLocaleString()}+</span></p>
                 </>
               )}
             </div>
