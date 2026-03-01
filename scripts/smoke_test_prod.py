@@ -194,14 +194,10 @@ def main() -> None:
     _log(f"Step 2: POST /admin/queue-run  sources=hn  date={date_str} …")
     try:
         qr = trigger_queue_run(url, key, date_str)
-        run_id     = qr["run_id"]
-        total_tasks = qr["total_tasks"]
-        enqueued   = qr["enqueued"]
-        failed_enq = qr["failed_to_enqueue"]
-        _log(f"  ✓ Run #{run_id} created  total_tasks={total_tasks}  "
-             f"enqueued={enqueued}  failed_to_enqueue={failed_enq}")
-        if failed_enq > 0:
-            _log(f"  ⚠ {failed_enq} task(s) failed to enqueue — Cloud Tasks may not be configured")
+        run_id  = qr["run_id"]
+        status  = qr.get("status", "unknown")
+        sources = qr.get("sources", [])
+        _log(f"  ✓ Run #{run_id} created  status={status}  sources={sources}")
     except Exception as exc:
         _err(f"queue-run failed: {exc}")
         failures.append(f"Step 2 (queue-run): {exc}")
