@@ -198,25 +198,16 @@ function InProcessView({ run, enrichStatus }: { run: PipelineRun; enrichStatus: 
         </div>
       )}
 
-      {/* Enrichment/vectorization status (from enrich-status endpoint) */}
+      {/* Enrichment status (from enrich-status endpoint) */}
       {enrichStatus && enrichStatus.total_saved > 0 && (
         <div className="border border-gray-200 rounded p-4 space-y-3">
-          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Enrichment & Vectorization</p>
-          <div className="space-y-2">
-            <div className="flex items-center gap-3">
-              <span className="text-xs text-gray-600 w-32 shrink-0">Enrich (Gemini)</span>
-              <ProgressBar value={enrichStatus.enriched} max={enrichStatus.total_saved} className="flex-1" />
-              <span className="text-xs text-gray-500 w-28 text-right shrink-0">
-                {enrichStatus.enriched} / {enrichStatus.total_saved}
-              </span>
-            </div>
-            <div className="flex items-center gap-3">
-              <span className="text-xs text-gray-600 w-32 shrink-0">Vectorize (Vertex)</span>
-              <ProgressBar value={enrichStatus.vectorized} max={enrichStatus.total_saved} className="flex-1" />
-              <span className="text-xs text-gray-500 w-28 text-right shrink-0">
-                {enrichStatus.vectorized} / {enrichStatus.total_saved}
-              </span>
-            </div>
+          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Enrichment</p>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-gray-600 w-32 shrink-0">Enrich (Gemini)</span>
+            <ProgressBar value={enrichStatus.enriched} max={enrichStatus.total_saved} className="flex-1" />
+            <span className="text-xs text-gray-500 w-28 text-right shrink-0">
+              {enrichStatus.enriched} / {enrichStatus.total_saved}
+            </span>
           </div>
         </div>
       )}
@@ -396,25 +387,16 @@ function TaskGrid({
 
 function AsyncPipelineStatus({ enrichStatus }: { enrichStatus: EnrichStatus | null }) {
   if (!enrichStatus) return null
-  const { total_saved, enriched, vectorized } = enrichStatus
+  const { total_saved, enriched } = enrichStatus
   return (
     <div className="border border-gray-200 rounded p-4 space-y-3">
       <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Post-Save Pipeline (async via Pub/Sub)</p>
-      <div className="space-y-2">
-        <div className="flex items-center gap-3">
-          <span className="text-xs text-gray-600 w-32 shrink-0">Enrich (Gemini)</span>
-          <ProgressBar value={enriched} max={total_saved} className="flex-1" />
-          <span className="text-xs text-gray-500 w-28 text-right shrink-0">
-            {enriched} / {total_saved} articles
-          </span>
-        </div>
-        <div className="flex items-center gap-3">
-          <span className="text-xs text-gray-600 w-32 shrink-0">Vectorize (Vertex)</span>
-          <ProgressBar value={vectorized} max={total_saved} className="flex-1" />
-          <span className="text-xs text-gray-500 w-28 text-right shrink-0">
-            {vectorized} / {total_saved} articles
-          </span>
-        </div>
+      <div className="flex items-center gap-3">
+        <span className="text-xs text-gray-600 w-32 shrink-0">Enrich (Gemini)</span>
+        <ProgressBar value={enriched} max={total_saved} className="flex-1" />
+        <span className="text-xs text-gray-500 w-28 text-right shrink-0">
+          {enriched} / {total_saved} articles
+        </span>
       </div>
     </div>
   )

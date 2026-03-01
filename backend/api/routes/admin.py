@@ -914,15 +914,12 @@ async def get_stats(
     by_source = {row.source_type: row.cnt for row in rows}
     total = sum(by_source.values())
 
-    # Pipeline health breakdown
+    # Pipeline health breakdown (enrichment only)
     pipeline_stmt = select(
         func.count(Article.id).label("total"),
         func.count(Article.id).filter(Article.is_enriched == 1).label("enriched"),
         func.count(Article.id).filter(Article.is_enriched == 0).label("enrich_pending"),
         func.count(Article.id).filter(Article.is_enriched == -1).label("enrich_failed"),
-        func.count(Article.id).filter(Article.is_vectorized == 1).label("vectorized"),
-        func.count(Article.id).filter(Article.is_vectorized == 0).label("vectorize_pending"),
-        func.count(Article.id).filter(Article.is_vectorized == -1).label("vectorize_failed"),
     )
     for f in date_filter:
         pipeline_stmt = pipeline_stmt.where(f)
@@ -935,9 +932,6 @@ async def get_stats(
             "enriched": p["enriched"],
             "enrich_pending": p["enrich_pending"],
             "enrich_failed": p["enrich_failed"],
-            "vectorized": p["vectorized"],
-            "vectorize_pending": p["vectorize_pending"],
-            "vectorize_failed": p["vectorize_failed"],
         },
         "filters": {"month": month, "year": year},
     }

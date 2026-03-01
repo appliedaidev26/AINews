@@ -261,9 +261,6 @@ export interface PipelineHealth {
   enriched: number
   enrich_pending: number
   enrich_failed: number
-  vectorized: number
-  vectorize_pending: number
-  vectorize_failed: number
 }
 export interface StatsResponse {
   total: number
