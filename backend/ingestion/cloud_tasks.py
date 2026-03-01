@@ -14,6 +14,7 @@ QUEUE_FOR_SOURCE = {
     "rss":    "rss-ingestion",
     "arxiv":  "arxiv-ingestion",
     "reddit": "reddit-ingestion",
+    "grok":   "grok-ingestion",
 }
 
 

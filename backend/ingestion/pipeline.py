@@ -17,6 +17,7 @@ from backend.ingestion.sources.hackernews import fetch_hackernews
 from backend.ingestion.sources.reddit import fetch_reddit
 from backend.ingestion.sources.arxiv_source import fetch_arxiv
 from backend.ingestion.sources.rss_feeds import fetch_rss
+from backend.ingestion.sources.grok import fetch_grok
 from backend.processing.dedup import deduplicate_articles
 from backend.processing.enricher import enrich_articles
 
@@ -131,6 +132,7 @@ _SOURCE_FETCHERS = {
     "reddit": lambda td, _fids: asyncio.to_thread(fetch_reddit, td),
     "arxiv":  lambda td, _fids: asyncio.to_thread(fetch_arxiv, td),
     "rss":    lambda td, fids: asyncio.to_thread(fetch_rss, td, fids),
+    "grok":   lambda td, _fids: asyncio.to_thread(fetch_grok, td),
 }
 
 
@@ -182,7 +184,7 @@ async def _run_one_date(
         "dates_total": dates_total,
         **running_totals,
     })
-    source_list = [s for s in ("hn", "reddit", "arxiv", "rss") if s in enabled_sources]
+    source_list = [s for s in ("hn", "reddit", "arxiv", "rss", "grok") if s in enabled_sources]
     fetch_results = await asyncio.gather(*[
         _fetch_source_safe(src, target_date, run_id, rss_feed_ids)
         for src in source_list
@@ -316,7 +318,7 @@ async def run_pipeline(
     effective_from = date_from or target_date or date.today()
     effective_to   = date_to or effective_from
     if enabled_sources is None:
-        enabled_sources = {"hn", "reddit", "arxiv", "rss"}
+        enabled_sources = {"hn", "reddit", "arxiv", "rss", "grok"}
 
     all_dates = [
         effective_from + timedelta(days=i)

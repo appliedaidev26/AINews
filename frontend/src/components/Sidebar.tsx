@@ -19,6 +19,7 @@ const SOURCES = [
   { value: 'hn', label: 'Hacker News' },
   { value: 'reddit', label: 'Reddit' },
   { value: 'arxiv', label: 'Arxiv' },
+  { value: 'grok', label: 'Grok' },
 ]
 
 const BLOGS = [

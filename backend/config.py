@@ -34,6 +34,14 @@ class Settings(BaseSettings):
     arxiv_max_results: int = 30
     arxiv_min_relevance: float = 0.6
 
+    # xAI / Grok
+    xai_api_key: str = ""
+    xai_model: str = "grok-4-fast-non-reasoning"
+    xai_queries_per_run: int = 5
+    xai_articles_per_query: int = 15
+    xai_base_engagement: int = 120
+    xai_min_engagement: int = 1000
+
     # Dedup
     dedup_similarity_threshold: float = 0.85
 

@@ -100,7 +100,7 @@ async def trigger_ingest(
     date_to:      Optional[date] = Query(None, description="Range end (ISO date, e.g. 2026-01-31)"),
     target_date:  Optional[date] = Query(None, description="Legacy single-date param — kept for compat"),
     triggered_by: str            = Query("api"),
-    sources:      str            = Query("hn,reddit,arxiv,rss", description="Comma-separated source types to include"),
+    sources:      str            = Query("hn,reddit,arxiv,rss,grok", description="Comma-separated source types to include"),
     rss_feed_ids: str            = Query("", description="Comma-separated RSS feed IDs; empty means all active feeds"),
     populate_trending: bool      = Query(False, description="Also fetch last 2 days of HN+Reddit for trending strip"),
     key: str = Depends(require_admin),
@@ -112,7 +112,7 @@ async def trigger_ingest(
 
     enabled_sources = {s.strip().lower() for s in sources.split(",") if s.strip()}
     if not enabled_sources:
-        enabled_sources = {"hn", "reddit", "arxiv", "rss"}
+        enabled_sources = {"hn", "reddit", "arxiv", "rss", "grok"}
 
     parsed_feed_ids: Optional[set[int]] = None
     if rss_feed_ids.strip():
@@ -541,7 +541,7 @@ async def queue_run(
     date_from:    Optional[date] = Query(None, description="Range start (ISO date)"),
     date_to:      Optional[date] = Query(None, description="Range end (ISO date)"),
     triggered_by: str            = Query("api"),
-    sources:      str            = Query("hn,reddit,arxiv,rss", description="Comma-separated source types"),
+    sources:      str            = Query("hn,reddit,arxiv,rss,grok", description="Comma-separated source types"),
     rss_feed_ids: str            = Query("", description="Comma-separated RSS feed IDs; empty means all active feeds"),
     populate_trending: bool      = Query(False, description="Also fetch last 2 days of HN+Reddit for trending strip"),
     key: str = Depends(require_admin),
@@ -554,7 +554,7 @@ async def queue_run(
 
     enabled_sources = {s.strip().lower() for s in sources.split(",") if s.strip()}
     if not enabled_sources:
-        enabled_sources = {"hn", "reddit", "arxiv", "rss"}
+        enabled_sources = {"hn", "reddit", "arxiv", "rss", "grok"}
 
     parsed_feed_ids: Optional[set[int]] = None
     if rss_feed_ids.strip():
