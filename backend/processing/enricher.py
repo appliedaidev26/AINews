@@ -5,7 +5,7 @@ import logging
 import ssl
 import socket
 import time
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from tenacity import (
@@ -15,7 +15,7 @@ from tenacity import (
 import google.api_core.exceptions
 from requests.exceptions import SSLError as RequestsSSLError, ConnectionError as RequestsConnectionError
 from sqlalchemy.orm import Session
-from sqlalchemy import select, update, or_
+from sqlalchemy import select, update, or_, func
 
 from backend.config import settings
 from backend.db import sync_engine
@@ -345,6 +345,29 @@ async def enrich_articles(
             logger.info(f"[{target_date}] Found {len(pending_ids)} pending articles from prior run — re-enriching")
 
     all_ids = saved_ids + pending_ids
+
+    # Daily cap: limit total Gemini calls per UTC day to stay within free-tier RPD
+    if settings.enrichment_max_per_day > 0 and all_ids:
+        utc_today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        with Session(sync_engine) as s:
+            enriched_today = s.execute(
+                select(func.count(Article.id)).where(
+                    Article.is_enriched == 1,
+                    Article.ingested_at >= utc_today_start,
+                )
+            ).scalar() or 0
+        remaining_budget = max(0, settings.enrichment_max_per_day - enriched_today)
+        if remaining_budget == 0:
+            logger.warning(
+                f"Daily enrichment cap reached ({enriched_today}/{settings.enrichment_max_per_day}) — skipping {len(all_ids)} articles"
+            )
+            return 0
+        if len(all_ids) > remaining_budget:
+            logger.info(
+                f"Trimming enrichment batch from {len(all_ids)} to {remaining_budget} "
+                f"(daily cap: {enriched_today}/{settings.enrichment_max_per_day} used)"
+            )
+            all_ids = all_ids[:remaining_budget]
 
     # Stagger interval: 1s at 60 RPM paid tier; 4s at 15 RPM free tier
     rate_interval = 60.0 / settings.enrichment_rate_rpm
